@@ -1,0 +1,2 @@
+# Requirements for UW CSED 504
+# Add course-specific dependencies below as needed.
