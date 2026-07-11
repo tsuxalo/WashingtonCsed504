@@ -76,16 +76,33 @@ Write-Host 'Registering Jupyter kernel...' -ForegroundColor Green
 & $condaExe run -n $ENV_NAME python -m ipykernel install `
     --user --name $ENV_NAME --display-name "Python ($ENV_NAME)"
 
-# -- Step 7: pin GPU visibility (both RTX PRO 6000) and verify -----------------------------------
-# cuda_check.ps1 writes CUDA_VISIBLE_DEVICES into the env's activate.d so both
-# same-architecture GPUs are exposed for DataParallel training, then verifies.
-# It needs the env activated (CONDA_PREFIX set), so activate via conda's hook.
+# -- Step 7: pin GPU visibility (whatever GPUs are present) and verify ----------------------------
+# cuda_check.ps1 writes CUDA_VISIBLE_DEVICES into the env's activate.d, exposing
+# every usable GPU (all same-architecture cards on the dual-GPU workstation, or the
+# single card on a laptop), then verifies with PyTorch.  It needs the env's python.
+#
+# We resolve the env prefix with "conda run" instead of "conda activate": activating
+# a conda env inside a non-interactive script runs conda's PowerShell hook, whose
+# embedded "conda activate base" line calls conda with empty _CE_M/_CE_CONDA args and
+# fails with 'invalid choice: ""'.  "conda run" needs no activation and is reliable.
 Write-Host 'Configuring GPU visibility...' -ForegroundColor Green
-(& $condaExe 'shell.powershell' 'hook') | Out-String | Invoke-Expression
-conda activate $ENV_NAME
-& "$PSScriptRoot\cuda_check.ps1" -EnvName $ENV_NAME
+$envPrefix = (& $condaExe run -n $ENV_NAME python -c "import sys; print(sys.prefix)" |
+              Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1).Trim()
+& "$PSScriptRoot\cuda_check.ps1" -EnvName $ENV_NAME -CondaPrefix $envPrefix
 
 # -- Done ----------------------------------------------------------------------------------------
+# Report what was actually pinned, so the message is correct on any machine
+# (dual-GPU workstation, single-GPU laptop, or CPU-only).  --print-cvd emits the
+# comma-joined UUIDs cuda_check.ps1 pinned; the GPU count is one more than the
+# number of commas.
+$gpuCheckPy = Join-Path $PSScriptRoot 'src\common\gpu_check.py'
+$gpuCount = 0
+if ($envPrefix -and (Test-Path (Join-Path $envPrefix 'python.exe')) -and (Test-Path $gpuCheckPy)) {
+    $cvd = (& (Join-Path $envPrefix 'python.exe') $gpuCheckPy --print-cvd 2>$null |
+            Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1)
+    if ($cvd) { $gpuCount = ($cvd.Trim() -split ',').Count }
+}
+
 Write-Host ''
 Write-Host '========================================' -ForegroundColor Cyan
 Write-Host "Environment '$ENV_NAME' is ready." -ForegroundColor Green
@@ -94,6 +111,13 @@ Write-Host "Activate : conda activate $ENV_NAME"
 Write-Host 'Verify   : python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"'
 Write-Host 'Re-check GPUs anytime : .\cuda_check.ps1'
 Write-Host ''
-Write-Host 'Both RTX PRO 6000 GPUs are pinned via activate.d. Wrap models with'
-Write-Host 'gpu_check.get_data_parallel_model(model, DEVICE) to train across both.'
+if ($gpuCount -gt 1) {
+    Write-Host "$gpuCount same-architecture GPUs are pinned via activate.d. Wrap models with"
+    Write-Host 'gpu_check.get_data_parallel_model(model, DEVICE) to train across all of them.'
+} elseif ($gpuCount -eq 1) {
+    Write-Host '1 GPU is pinned via activate.d. get_device() will select it automatically;'
+    Write-Host 'get_data_parallel_model() is a no-op on a single GPU (returns the model unchanged).'
+} else {
+    Write-Host 'No NVIDIA GPU was detected - training will fall back to CPU (or MPS on Apple Silicon).'
+}
 Write-Host '========================================' -ForegroundColor Cyan

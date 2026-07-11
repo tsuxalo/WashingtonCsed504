@@ -7,22 +7,39 @@
 #
 # Also called by setup_windows.ps1 after PyTorch is installed.
 #
-# Optional parameter: the conda environment name to configure (default uw-csed504).
+# Parameters:
+#   -EnvName      conda environment name to configure (default uw-csed504); used
+#                 only for messages.
+#   -CondaPrefix  full path to the env's prefix (the folder containing python.exe).
+#                 When omitted, $env:CONDA_PREFIX is used -- which is what you get
+#                 after "conda activate uw-csed504" in an interactive shell.  The
+#                 setup script passes this explicitly because activating a conda
+#                 env inside a non-interactive script is unreliable.
 param(
-    [string]$EnvName = "uw-csed504"
+    [string]$EnvName = "uw-csed504",
+    [string]$CondaPrefix = ""
 )
 
 # ---------------------------------------------------------------------------
 # Multi-GPU visibility.
 #
 # The GPU selection logic lives in src/common/gpu_check.py so notebooks and this
-# script make identical choices.  Selection rules:
-#   * Single GPU                        -> use it
-#   * Multiple GPUs, same architecture  -> use ALL   (DataParallel across them)
-#   * Mixed architectures               -> use only the best-architecture group
+# script make identical choices.  Cards are ranked by (VRAM, compute capability) --
+# more memory wins, newer architecture only breaks ties (a 32 GB Ampere beats an
+# 8 GB Ada, because VRAM matters more than generation for training).  Rules:
+#   * Single GPU                          -> use it
+#   * Several IDENTICAL cards             -> use ALL   (matched DataParallel)
+#     (same VRAM AND same architecture)
+#   * Any mismatch (different VRAM, or    -> use ONLY the single most powerful card
+#     same VRAM but different arch)
 #
-# This workstation has two RTX PRO 6000 Blackwell Max-Q cards (both sm_120), so
-# gpu_check.py selects BOTH and torch.cuda.device_count() reports 2.
+# The exact selection depends on the machine: the dual RTX PRO 6000 workstation
+# (two matched sm_120 cards) selects BOTH and reports device_count() == 2; a single-
+# GPU laptop (e.g. an RTX 2000 Ada, sm_89) selects that one card; and a mixed rig
+# (e.g. a 96 GB RTX PRO 6000 + a 32 GB RTX 5000 Ada) selects the RTX PRO 6000 alone,
+# because DataParallel across mismatched cards stalls on the weaker card and OOMs the
+# smaller one.  gpu_check.py decides from the hardware actually present -- nothing
+# here is hard-coded to a specific GPU count or model.
 #
 # We enumerate hardware with nvidia-smi (via gpu_check.py), NOT PyTorch: torch's
 # CUDA indices are already filtered by any existing CUDA_VISIBLE_DEVICES, so it
@@ -39,9 +56,15 @@ Write-Host "Configuring CUDA device visibility..." -ForegroundColor Green
 $_condaCmd = Get-Command conda -ErrorAction SilentlyContinue
 $condaExe  = if ($env:CONDA_EXE)    { $env:CONDA_EXE }    elseif ($_condaCmd) { $_condaCmd.Source } else { $null }
 # Only ever use Python from the conda prefix; never the Windows Store launcher alias.
-$pythonExe = if ($env:CONDA_PREFIX) { Join-Path $env:CONDA_PREFIX 'python.exe' } else { $null }
+# Prefer an explicitly passed -CondaPrefix (used by setup_windows.ps1, which cannot
+# rely on interactive "conda activate"); fall back to the active env's CONDA_PREFIX.
+$prefix    = if ($CondaPrefix)      { $CondaPrefix }      elseif ($env:CONDA_PREFIX) { $env:CONDA_PREFIX } else { $null }
+$pythonExe = if ($prefix)           { Join-Path $prefix 'python.exe' } else { $null }
 
-if (-not $condaExe) {
+# conda itself is only needed to locate the env's python when it wasn't passed in.
+# If we already have a prefix (explicit -CondaPrefix or an active env), conda's
+# absence from PATH is irrelevant, so don't cry wolf.
+if (-not $condaExe -and -not $prefix) {
     Write-Host "  WARNING: conda not found - run this from a conda-activated terminal." -ForegroundColor Yellow
     Write-Host "    e.g.  conda activate $EnvName ; then re-run .\cuda_check.ps1" -ForegroundColor Yellow
 }

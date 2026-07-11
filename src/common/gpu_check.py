@@ -37,14 +37,28 @@ provider of libiomp5md.dll.  This module therefore does NOT touch OMP_NUM_THREAD
 
 GPU selection rules
 -------------------
-  • Single GPU                        → use it
-  • Multiple GPUs, same architecture  → use ALL  (homogeneous DataParallel is fine)
-  • Mixed architectures               → use only the best-architecture group
-                                        ("best" = highest compute capability;
-                                        ties broken by VRAM)
+Cards are ranked by "power" = (VRAM, compute capability): more memory wins, and a
+newer architecture only breaks ties between cards with the same VRAM.  VRAM leads
+because for model training the memory a card holds (weights + activations + batch)
+matters more than a newer arch — a 32 GB Ampere beats an 8 GB Ada.
 
-The two RTX PRO 6000 Blackwell Max-Q cards in this workstation share sm_120, so
-both are selected and made visible for data-parallel training.
+  • Single GPU                         → use it
+  • Several IDENTICAL cards            → use ALL  (matched DataParallel is fine)
+    (same VRAM AND same architecture)
+  • Any mismatch (different VRAM, or   → use ONLY the single most powerful card
+    same VRAM but different arch)
+
+Selection is driven entirely by the hardware present, so the same code is correct
+on every machine:
+  • dual RTX PRO 6000 workstation (two matched sm_120 cards) → exposes both for
+    data-parallel training;
+  • single-GPU laptop (e.g. an RTX 2000 Ada, sm_89)          → uses its one card;
+  • mixed rig, e.g. a 96 GB RTX PRO 6000 (sm_120) + a 32 GB RTX 5000 Ada (sm_89)
+    → uses the RTX PRO 6000 alone and hides the Ada, because DataParallel across
+    mismatched cards causes stragglers and OOMs the smaller card;
+  • memory over generation: a 32 GB Ampere (sm_86) + an 8 GB Ada (sm_89) → uses the
+    32 GB Ampere, since more VRAM beats a newer architecture for training.
+Nothing here is hard-coded to a specific GPU count or model.
 """
 
 from __future__ import annotations
@@ -136,24 +150,38 @@ def _select_gpus(gpus: list[GpuInfo]) -> list[GpuInfo]:
     """
     Return the subset of GPUs that should be made visible to PyTorch.
 
+    "Power" is ranked by (VRAM, compute capability): more memory wins, and a newer
+    architecture only breaks ties between cards with the SAME VRAM.  VRAM leads on
+    purpose — for model training the amount of memory (weights + activations + batch
+    that fit) matters more than a newer architecture, so a 32 GB Ampere is preferred
+    over an 8 GB Ada.
+
     Rules:
-      • 0 or 1 GPUs           → return as-is
-      • All same architecture → return all  (homogeneous DataParallel is fine)
-      • Mixed architectures   → return only the GPUs with the best (highest)
-                                architecture; if several share that best
-                                architecture, return all of them
+      • 0 or 1 GPUs                       → return as-is
+      • Several IDENTICAL cards tie for    → return them all; DataParallel across
+        most powerful (same VRAM AND         matched cards is safe
+        same arch)
+      • Any mismatch — different VRAM, or  → return ONLY the single most powerful
+        same VRAM but different arch          card
+
+    Why we don't keep mismatched cards: torch.nn.DataParallel splits every batch
+    *evenly* across the visible GPUs, so pairing a large/fast card with a smaller or
+    slower one makes the strong card wait on the weak one (stragglers) and OOMs the
+    smaller card's shard.  A real mixed rig — e.g. a 96 GB RTX PRO 6000 (sm_120) next
+    to a 32 GB RTX 5000 Ada (sm_89) — therefore runs on the RTX PRO 6000 alone.  We
+    only expose multiple GPUs when they are truly matched.
     """
     if len(gpus) <= 1:
         return gpus
 
-    best_cap   = max(g.compute_cap for g in gpus)
-    best_group = [g for g in gpus if g.compute_cap == best_cap]
-
-    # If every GPU is in the best group, all architectures are the same.
-    if len(best_group) == len(gpus):
-        return gpus  # homogeneous — use all
-
-    return best_group  # heterogeneous — hide the weaker ones
+    # Rank cards by (VRAM, compute capability); the max is the most powerful card.
+    # VRAM comes first so a bigger card beats a newer-but-smaller one (a 32 GB Ampere
+    # over an 8 GB Ada); architecture only decides between equal-VRAM cards.  Keep
+    # every card whose (VRAM, arch) equals that best — i.e. identical siblings for
+    # DataParallel — and hide everything else.  On a mismatched rig only the one
+    # strongest card matches, so we fall back to using it alone.
+    best_key = max((g.vram_gb, g.compute_cap) for g in gpus)
+    return [g for g in gpus if (g.vram_gb, g.compute_cap) == best_key]
 
 
 # ─── CUDA configuration ─────────────────────────────────────────────────────────────────────────
@@ -168,8 +196,8 @@ def configure_cuda(verbose: bool = True) -> list[int]:
     initialised a warning is printed; the env-var is still updated so that child
     processes launched afterward see the right set.
 
-    On this workstation both RTX PRO 6000 cards share sm_120, so both UUIDs are
-    written to CUDA_VISIBLE_DEVICES and torch.cuda.device_count() reports 2.
+    The number of UUIDs written depends on the machine: two on the dual RTX PRO 6000
+    workstation (both sm_120, so device_count() reports 2), one on a single-GPU laptop.
 
     Returns:
         List of nvidia-smi GPU indices selected (empty list for CPU-only / non-NVIDIA).
@@ -209,15 +237,17 @@ def configure_cuda(verbose: bool = True) -> list[int]:
 
     if verbose:
         n_total, n_sel = len(gpus), len(selected)
+        best = selected[0]
         if n_sel == n_total == 1:
             desc = "single GPU"
         elif n_sel == n_total:
-            desc = f"all {n_sel} GPUs (same architecture - DataParallel OK)"
+            desc = f"all {n_sel} GPUs (identical {best.sm} / {best.vram_gb:.0f} GB - DataParallel OK)"
         elif n_sel == 1:
-            desc = f"1 of {n_total} GPUs (best architecture {selected[0].sm!r}; weaker GPU(s) hidden)"
+            desc = (f"most powerful of {n_total} GPUs ({best.sm} / {best.vram_gb:.0f} GB; "
+                    "mismatched GPU(s) hidden to avoid DataParallel stragglers/OOM)")
         else:
-            desc = (f"{n_sel} of {n_total} GPUs (best architecture {selected[0].sm!r} - "
-                    "DataParallel OK within group; weaker GPU(s) hidden)")
+            desc = (f"{n_sel} of {n_total} GPUs (matched {best.sm} / {best.vram_gb:.0f} GB - "
+                    "DataParallel OK within group; mismatched GPU(s) hidden)")
         print(f"[gpu_check] Using {desc}")
         print(f"  CUDA_VISIBLE_DEVICES = {cvd!r}")
         for i, g in enumerate(selected):
@@ -250,6 +280,11 @@ def get_device(verbose: bool = True, config_multigpu: bool = True):
     Priority: CUDA (NVIDIA) → MPS (Apple Silicon) → CPU.  The MPS smoke-test
     catches older macOS versions that advertise MPS support but fail on the first
     tensor operation.
+
+    This ordering is by device *type*, never by memory: a GPU is always preferred
+    over the CPU, so an 8 GB GPU beats a 64 GB CPU.  The "more memory wins" rule in
+    _select_gpus ranks GPUs against each OTHER; it never weighs GPU VRAM against
+    system RAM.
 
     Parameters
     ----------
@@ -327,7 +362,8 @@ def get_data_parallel_model(model, device, verbose: bool = True):
 
     DataParallel splits each input batch across the visible GPUs, runs the forward
     pass in parallel, and gathers the results on cuda:0 — the simplest way to use
-    both RTX PRO 6000 cards.  Returns the model unchanged on single-GPU / CPU / MPS.
+    multiple same-architecture cards (e.g. the workstation's two RTX PRO 6000s).
+    Returns the model unchanged on single-GPU / CPU / MPS.
 
     Parameters
     ----------
@@ -357,8 +393,9 @@ def enable_fast_matmul(tf32: bool = True, cudnn_benchmark: bool = True) -> None:
     Enable Blackwell-friendly fast math for training throughput.
 
     This is the main lever for a faster inner loop when the model already fits on one
-    card (measured ~1.8x on these RTX PRO 6000s vs fp32; a second GPU via DataParallel
-    gave ~1.0x at class scale, i.e. no gain):
+    card (measured ~1.8x vs fp32 on the RTX PRO 6000 workstation; a second GPU via
+    DataParallel gave ~1.0x at class scale there, i.e. no gain — measure on your own
+    hardware, since the speedup varies by GPU):
 
       - TF32 matmuls (``set_float32_matmul_precision("high")``): large speedup for a tiny
         precision cost on fp32 paths.
@@ -393,8 +430,9 @@ def get_max_memory(reserve_gib: float = 5.0) -> dict:
 
     DataParallel (get_data_parallel_model) replicates the WHOLE model on each GPU, so
     the model must fit on ONE card — it only raises throughput/batch size.  To train or
-    run a model LARGER than a single 96 GB card, use model (pipeline) parallelism, which
-    splits the model's layers ACROSS both cards and pools their VRAM (~192 GB total):
+    run a model LARGER than a single card, use model (pipeline) parallelism, which
+    splits the model's layers ACROSS the visible GPUs and pools their VRAM (needs 2+
+    GPUs; on the workstation the two 96 GB RTX PRO 6000s give ~192 GB combined):
 
         from transformers import AutoModelForCausalLM
         from gpu_check import get_max_memory
@@ -437,8 +475,11 @@ def preflight_check(required_data: list[tuple[str, str]] | None = None,
 
     Checks:
       1. CUDA is available.
-      2. All visible GPUs share the same architecture (mixed archs make
-         DataParallel emit GPU-imbalance / NCCL warnings and can hurt correctness).
+      2. All visible GPUs are matched — same architecture AND same VRAM. Mixing
+         cards (different arch, or same arch but different memory) makes
+         DataParallel split batches unevenly across unequal GPUs: the strong card
+         waits on the weak one and the smaller card OOMs. configure_cuda() hides
+         mismatched cards, so this only trips on a manual CUDA_VISIBLE_DEVICES.
       3. FP16 matmul smoke test on cuda:0 (optional, on by default).
       4. Required data files exist on disk (optional).
 
@@ -460,12 +501,17 @@ def preflight_check(required_data: list[tuple[str, str]] | None = None,
     gpu_props = [torch.cuda.get_device_properties(i) for i in range(n_gpus)]
 
     if n_gpus > 1:
-        sm_caps = {(p.major, p.minor) for p in gpu_props}
-        if len(sm_caps) > 1:
-            names = [p.name for p in gpu_props]
+        # Round VRAM to the nearest 0.1 GB so tiny reporting jitter between two
+        # identical cards doesn't look like a mismatch.
+        specs = {((p.major, p.minor), round(p.total_memory / 1e9, 1)) for p in gpu_props}
+        if len(specs) > 1:
+            descs = [f"{p.name} (sm_{p.major}{p.minor}, {p.total_memory / 1e9:.1f} GB)"
+                     for p in gpu_props]
             errors.append(
-                f"Mixed GPU architectures visible to PyTorch: {names}. Restart the "
-                "kernel and let get_device()/configure_cuda() hide the weaker GPU(s)."
+                f"Mismatched GPUs visible to PyTorch: {descs}. DataParallel needs "
+                "identical cards (same architecture AND VRAM). Restart the kernel and "
+                "let get_device()/configure_cuda() keep only the most powerful card, "
+                "or set CUDA_VISIBLE_DEVICES to a single card."
             )
 
     if smoke_test and not errors:
