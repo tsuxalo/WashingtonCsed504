@@ -23,10 +23,38 @@
 # not MKL), and using conda solely to create the Python interpreter.  This mirrors
 # the known-good uw-csed503 environment, which has exactly one libiomp5md.dll
 # (torch's) and never raises OMP #15.
+#
+# There is a SECOND way to trigger the same error, which has nothing to do with
+# this env: a stray per-user ("--user") install of torch.  If pip ever runs against
+# an interpreter whose site-packages is not writable -- e.g. plain `pip install torch`
+# in the Anaconda BASE env, where base lives under a machine-wide folder -- pip
+# silently "defaults to user installation" and drops the whole stack into
+#   %APPDATA%\Python\Python3XX\site-packages
+# That directory is auto-added to sys.path by EVERY Python of that version, so base
+# python (conda MKL + intel-openmp) then imports the user-site torch, loads a second
+# libiomp5md.dll, and raises OMP #15 -- even when uw-csed504 itself is perfectly clean.
+# The tell: `python -c "import torch"` fails in an UNACTIVATED shell (that's base),
+# while `conda run -n uw-csed504 python -c "import torch"` works.
+#
+# So this script also: (a) forces PIP_USER=0 / PYTHONNOUSERSITE=1 so its own installs
+# can never leak into user-site, and (b) checks for a pre-existing stray user-site
+# stack and offers to remove it (-CleanUserSite).
 # ---------------------------------------------------------------------------
+
+param(
+    # Delete any stray %APPDATA%\Python\Python3XX\site-packages torch stack found
+    # during preflight instead of only warning about it.
+    [switch]$CleanUserSite
+)
 
 $ErrorActionPreference = 'Stop'
 $ENV_NAME = 'uw-csed504'
+
+# Never install into, or import from, the per-user site-packages.  PIP_USER=0 blocks
+# an explicit/implicit --user install; PYTHONNOUSERSITE=1 keeps any pre-existing
+# user-site off sys.path for the pythons this script runs.
+$env:PIP_USER          = '0'
+$env:PYTHONNOUSERSITE  = '1'
 
 Write-Host ''
 Write-Host '=== CSED 504 environment setup ===' -ForegroundColor Cyan
@@ -38,6 +66,39 @@ if (-not $condaExe -or -not (Test-Path $condaExe)) {
     throw "conda not found. Run this script from the Anaconda Prompt so CONDA_EXE is set."
 }
 Write-Host "Using conda: $condaExe" -ForegroundColor DarkGray
+
+# -- Preflight: detect a stray per-user torch install (the OTHER cause of OMP #15) ---------------
+# %APPDATA%\Python\Python3XX\site-packages is shared by every Python of that version,
+# so a torch left there makes even a clean uw-csed504 shell raise OMP #15 whenever a
+# non-env python (e.g. Anaconda base) imports torch.  Find any such copy and, with
+# -CleanUserSite, remove the torch stack from it.
+Write-Host 'Checking for a stray per-user (--user) torch install...' -ForegroundColor DarkGray
+$userSiteRoots = @()
+if ($env:APPDATA) {
+    $pyRoot = Join-Path $env:APPDATA 'Python'
+    if (Test-Path $pyRoot) {
+        $userSiteRoots = Get-ChildItem -Path $pyRoot -Directory -Filter 'Python3*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'site-packages' } |
+            Where-Object { Test-Path (Join-Path $_ 'torch') }
+    }
+}
+if ($userSiteRoots) {
+    Write-Host ''
+    Write-Host 'WARNING: found torch in a per-user site-packages (a known OMP #15 trigger):' -ForegroundColor Yellow
+    $userSiteRoots | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    if ($CleanUserSite) {
+        foreach ($sp in $userSiteRoots) {
+            Write-Host "  Removing stray user-site: $sp" -ForegroundColor Yellow
+            Remove-Item -LiteralPath $sp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host '  Stray user-site removed.' -ForegroundColor Green
+    } else {
+        Write-Host '  Leaving it in place. Re-run with -CleanUserSite to delete it, or manually:' -ForegroundColor Yellow
+        Write-Host "    Remove-Item -Recurse -Force '$($userSiteRoots -join "', '")'" -ForegroundColor DarkGray
+        Write-Host '  Until then, a bare (unactivated) "python" may still raise OMP #15.' -ForegroundColor Yellow
+    }
+    Write-Host ''
+}
 
 # -- Step 1: faster solver -----------------------------------------------------------------------
 & $condaExe config --set solver libmamba
