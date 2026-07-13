@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code — keep per-machine settings out of the shared repo.
+# (settings.local.json is always personal; this repo also keeps settings.json local
+#  by choice. Remove the settings.json line if you ever want to share an allowlist.)
+.claude/settings.local.json
+.claude/settings.json
+
+# Notebooks
+src/a1-cv/data/*
+src/a1-cv/cifar10_resnet18.pt

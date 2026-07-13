@@ -1,0 +1,12 @@
+# Normalize line endings across Windows + macOS so scripts run on both.
+* text=auto
+
+# Bash scripts MUST be LF — CRLF breaks the shebang and `\r` on macOS/Linux.
+*.sh   text eol=lf
+
+# Python and Jupyter notebooks: LF everywhere.
+*.py    text eol=lf
+*.ipynb text eol=lf
+
+# PowerShell is Windows-side; CRLF is conventional there.
+*.ps1  text eol=crlf
