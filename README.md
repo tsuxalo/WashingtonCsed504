@@ -205,3 +205,13 @@ makes all same-architecture GPUs visible. Helpers you can import:
   and make sure you're in the `uw-csed504` env (`conda activate uw-csed504`).
 - **Permission denied running a `.sh`** — invoke it as `bash setup_linux.sh` (or `setup_mac.sh`);
   no execute bit required.
+- **ViT training crashes on macOS with `RuntimeError: view size is not compatible with input
+  tensor's size and stride`** — this is a confirmed PyTorch MPS bug (present through at least
+  PyTorch 2.5.1). The C++ autograd engine produces non-contiguous gradient tensors during
+  `MultiheadAttention` backward, and a subsequent `.view()` call fails. There is no Python-level
+  workaround. The `cifar10_train.ipynb` notebook handles this automatically: it detects MPS and
+  sets `VIT_DEVICE = cpu` for all ViT *training* runs while keeping the ResNet and all ViT
+  *inference* (forward-only) on MPS. The ViT epoch counts are capped at 3 and 5 when on CPU so
+  the cells finish in a few minutes (accuracy will be low — this is a pipeline demo only). For
+  real ViT results (200 epochs), use Google Colab with a GPU runtime or a Windows/Linux machine
+  with CUDA.
