@@ -226,3 +226,9 @@ __marimo__/
 # Notebooks
 src/a1-cv/data/*
 src/a1-cv/cifar10_resnet18.pt
+
+# ImageNet-32 prepared arrays -- 4.1 GB, regenerate with:
+#   python src/a1-imagenet32/prepare_data.py
+src/a1-imagenet32/archive/
+src/a1-imagenet32/data/
+src/a1-imagenet32/runs/
