@@ -97,7 +97,9 @@ class GPUImageLoader:
             x = self._random_crop(x)
         if self.train and self.hflip:
             flip = torch.rand(x.size(0), device=x.device, generator=self.gen) < 0.5
-            x[flip] = x[flip].flip(-1)
+            # torch.where, not x[flip] = x[flip].flip(-1): the boolean-mask write runs nonzero()
+            # under the hood, forcing 2 host-device syncs per batch.  Bitwise-identical output.
+            x = torch.where(flip.view(-1, 1, 1, 1), x.flip(-1), x)
         x = x.div_(255.0).sub_(self.mean).div_(self.std)
         if self.train and self.erasing:
             x = self._random_erase(x)
