@@ -105,9 +105,11 @@ class GpuImageNet32:
         # so this comes back as (B,32,32,C) -- hence the permute.
         xb = xp[bidx, :, rows, cols].permute(0, 3, 1, 2).contiguous()
 
-        # --- RandomHorizontalFlip(): mirror half the batch.
-        flip = torch.rand(b, device=d) < 0.5
-        xb[flip] = xb[flip].flip(-1)
+        # --- RandomHorizontalFlip(): mirror half the batch.  torch.where, not a boolean-mask
+        # write: "xb[flip] = xb[flip].flip(-1)" runs nonzero() under the hood, forcing GPU->host
+        # syncs on every one of ~2,500 batches/epoch.  Same RNG draw, identical distribution.
+        flip = (torch.rand(b, device=d) < 0.5).view(b, 1, 1, 1)
+        xb = torch.where(flip, xb.flip(-1), xb)
         return xb
 
     def epoch(self, batch_size: int, train: bool, generator: torch.Generator | None = None):
