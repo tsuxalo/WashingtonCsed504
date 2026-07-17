@@ -50,16 +50,22 @@ def build_step(model_name: str, bs: int, n_train: int, n_val: int, num_classes: 
     yte = torch.randint(0, num_classes, (n_val,), device=device)
 
     is_vit = model_name.startswith('vit')
+    channels_last = not is_vit and device.type == 'cuda'
     train_loader = GPUImageLoader(xtr, ytr, bs, mean, std, train=True, erasing=is_vit, seed=42)
     test_loader = GPUImageLoader(xte, yte, 512, mean, std, train=False)
 
     model = M.build(model_name, num_classes=num_classes).to(device).train()
+    if channels_last:
+        model = model.to(memory_format=torch.channels_last)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    optimizer = (torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.05) if is_vit else
+    optimizer = (torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.05,
+                                   fused=device.type == 'cuda') if is_vit else
                  torch.optim.SGD(model.parameters(), lr=0.1 * bs / 256, momentum=0.9,
-                                 nesterov=True, weight_decay=5e-4))
+                                 nesterov=True, weight_decay=5e-4, fused=device.type == 'cuda'))
     use_amp = device.type == 'cuda'
-    scaler = torch.amp.GradScaler(device.type if device.type == 'cuda' else 'cpu', enabled=use_amp)
+    amp_dtype = torch.float16 if is_vit else torch.bfloat16
+    use_scaler = use_amp and amp_dtype is torch.float16
+    scaler = torch.amp.GradScaler('cuda', enabled=use_scaler)
 
     it = iter(train_loader)
 
@@ -70,8 +76,10 @@ def build_step(model_name: str, bs: int, n_train: int, n_val: int, num_classes: 
         except StopIteration:
             it = iter(train_loader)
             x, y = next(it)
+        if channels_last:
+            x = x.contiguous(memory_format=torch.channels_last)
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device.type, enabled=use_amp):
+        with torch.autocast(device.type, dtype=amp_dtype, enabled=use_amp):
             if is_vit:
                 lam = float(np.random.beta(0.2, 0.2))
                 perm = torch.randperm(x.size(0), device=x.device)
@@ -79,22 +87,34 @@ def build_step(model_name: str, bs: int, n_train: int, n_val: int, num_classes: 
                 loss = lam * criterion(out, y) + (1 - lam) * criterion(out, y[perm])
             else:
                 loss = criterion(model(x), y)
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        scaler.step(optimizer)
-        scaler.update()
+        if use_scaler:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
     @torch.no_grad()
-    def eval_fn():                          # faithful to evaluate(): fp32, top-5, per-batch .item() syncs
-        model.eval()
-        c1 = c5 = n = 0
+    def eval_fn():                          # faithful to evaluate(): autocast forward, on-GPU
+        model.eval()                        # accumulation, one .item() sync at the end
+        c1 = torch.zeros((), device=device)
+        c5 = torch.zeros((), device=device)
+        n = 0
         for x, y in test_loader:
-            _, pred = model(x).topk(5, dim=1)
+            if channels_last:
+                x = x.contiguous(memory_format=torch.channels_last)
+            with torch.autocast(device.type, dtype=amp_dtype, enabled=use_amp):
+                out = model(x)
+            _, pred = out.float().topk(5, dim=1)
             hits = pred.eq(y.view(-1, 1))
-            c1 += hits[:, :1].any(1).sum().item()
-            c5 += hits.any(1).sum().item()
+            c1 += hits[:, :1].any(1).sum()
+            c5 += hits.any(1).sum()
             n += y.size(0)
+        (c1 / max(n, 1)).item(); (c5 / max(n, 1)).item()
         model.train()
 
     return step_fn, eval_fn
@@ -140,9 +160,11 @@ def main() -> None:
           f"launch {probes['launch_overhead_us']:.1f} us")
 
     import models as M
+    recipe_tag = 'fp16' if args.model.startswith('vit') else 'bf16cl'   # tracks the training recipe
     flops = pk.count_flops_per_image(lambda: M.build(args.model, num_classes=args.num_classes))
-    work = pk.workload_spec(f'{args.model}-cifar100', n_train=args.n_train, n_val=args.n_val,
-                            batch_size=args.batch_size, epochs=args.epochs, flops=flops)
+    work = pk.workload_spec(f'{args.model}-cifar100-{recipe_tag}', n_train=args.n_train,
+                            n_val=args.n_val, batch_size=args.batch_size, epochs=args.epochs,
+                            flops=flops)
     print(f"[collect] workload: {work['params']/1e6:.1f}M params, "
           f"{work['train_flops_per_img']/1e9:.2f} GFLOP/img trained, {work['steps_per_epoch']} steps/epoch")
 
