@@ -31,7 +31,8 @@ def accuracy(logits: torch.Tensor, y: torch.Tensor, topk=(1, 5)) -> list[torch.T
 
 
 def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size, epoch, epochs,
-                    use_amp=True, strong_aug=False, clip=None):
+                    use_amp=True, amp_dtype=torch.float16, channels_last=False,
+                    strong_aug=False, clip=None):
     model.train()
     # Accumulate on the GPU.  Calling .item() every batch would force a GPU->CPU sync each step and
     # stall the pipeline -- on CIFAR that alone cost ~7%.  We sync ONCE, at the end of the epoch.
@@ -55,7 +56,10 @@ def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size,
             _D.random_erasing_(x)
             x, y_a, y_b, lam = _D.mixup_cutmix(x, y)
 
-        with torch.amp.autocast('cuda', enabled=use_amp):
+        if channels_last:                    # AFTER mixup/erasing: their indexing re-contiguates
+            x = x.contiguous(memory_format=torch.channels_last)
+
+        with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
             logits = model(x)
             # Mixed targets: the model is never given a confident one-hot answer, so it cannot just
             # memorize image->label.  With lam == 1.0 this collapses to the plain loss.
@@ -101,14 +105,17 @@ def _lr(optimizer):
 
 
 @torch.no_grad()
-def evaluate(model, ds, criterion, device, batch_size=1024, use_amp=True):
+def evaluate(model, ds, criterion, device, batch_size=1024, use_amp=True,
+             amp_dtype=torch.float16, channels_last=False):
     model.eval()
     loss_sum = torch.zeros((), device=device)
     c1 = torch.zeros((), device=device)
     c5 = torch.zeros((), device=device)
     n = torch.zeros((), device=device)
     for x, y in ds.epoch(batch_size, train=False):
-        with torch.amp.autocast('cuda', enabled=use_amp):
+        if channels_last:
+            x = x.contiguous(memory_format=torch.channels_last)
+        with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
             logits = model(x)
             loss = criterion(logits, y)
         k1, k5 = accuracy(logits, y)
@@ -135,7 +142,8 @@ def load_checkpoint(path, model, optimizer, scheduler, scaler, device):
     net.load_state_dict(ck['model'])
     optimizer.load_state_dict(ck['optimizer'])
     scheduler.load_state_dict(ck['scheduler'])
-    scaler.load_state_dict(ck['scaler'])
+    if scaler.is_enabled() and ck.get('scaler'):
+        scaler.load_state_dict(ck['scaler'])   # bf16 runs use a disabled scaler: nothing to restore
     return ck['epoch'], ck['best'], ck['history']
 
 

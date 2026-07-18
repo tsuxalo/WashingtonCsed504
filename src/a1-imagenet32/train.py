@@ -94,6 +94,10 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
     torch.manual_seed(42)
+    # bf16 on Ampere+ (no GradScaler needed -- fp32 exponent range); fp16 + scaler on older
+    # cards.  Paired with channels_last below for CNNs: measured 1.34x on a power-capped sm_89
+    # laptop, ~+2% on the Blackwell workstation -- hardware decides how much this matters.
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
     os.makedirs(OUT_DIR, exist_ok=True)
     ckpt_path = os.path.join(OUT_DIR, f'{tag}.pt')
@@ -110,6 +114,12 @@ def main():
           f'({train_ds.n:,} + {val_ds.n:,} images) in {time.time()-t_load:.0f}s')
 
     model = M.build(args.model, train_ds.n_classes).to(device)
+    channels_last = args.model.startswith('resnet') and amp_dtype is torch.bfloat16
+    if channels_last:
+        # NHWC for the CNNs, BEFORE the DataParallel wrap and optimizer construction.  Only
+        # under bf16: fp16 + channels_last hits a pathological cuDNN path (3.5x slower on sm_89).
+        # ViTs excluded -- NHWC is a no-op/overhead for transformers.
+        model = model.to(memory_format=torch.channels_last)
     print(f'[{tag}] {args.model}: {M.n_params(model):,} parameters')
     if args.data_parallel:
         model = nn.DataParallel(model, device_ids=[0, 1])
@@ -118,7 +128,7 @@ def main():
 
     optimizer, lr = build_optimizer(model, args.model, args.batch, args)
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-    scaler = torch.amp.GradScaler('cuda')
+    scaler = torch.amp.GradScaler('cuda', enabled=amp_dtype is torch.float16)
 
     warm = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=args.warmup)
     cos = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs - args.warmup))
@@ -132,7 +142,8 @@ def main():
         start_epoch = e + 1
         print(f'[{tag}] resumed from epoch {e} (best top1 {best:.2%})')
 
-    print(f'[{tag}] strong aug (mixup/cutmix/erasing): {args.strong_aug} | grad clip {args.clip}')
+    print(f'[{tag}] strong aug (mixup/cutmix/erasing): {args.strong_aug} | grad clip {args.clip} | '
+          f'amp {str(amp_dtype).replace("torch.", "")}{" + channels_last" if channels_last else ""}')
     print(f'[{tag}] {epochs} epochs, batch {args.batch}, lr {lr:.4f} '
           f'({args.warmup}-epoch warmup -> cosine), label smoothing {args.label_smoothing}')
     print(f'[{tag}] {train_ds.n_batches(args.batch):,} batches/epoch\n', flush=True)
@@ -141,8 +152,10 @@ def main():
     for epoch in range(start_epoch, epochs + 1):
         tr = E.train_one_epoch(model, train_ds, optimizer, criterion, scaler, device,
                                args.batch, epoch, epochs,
+                               amp_dtype=amp_dtype, channels_last=channels_last,
                                strong_aug=args.strong_aug, clip=(args.clip or None))
-        va = E.evaluate(model, val_ds, criterion, device)
+        va = E.evaluate(model, val_ds, criterion, device,
+                        amp_dtype=amp_dtype, channels_last=channels_last)
         scheduler.step()
 
         is_best = va['top1'] > best

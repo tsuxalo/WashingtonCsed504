@@ -1,0 +1,123 @@
+{
+ "schema": 1,
+ "timestamp": "2026-07-17T13:58:05+00:00",
+ "fingerprint": {
+  "hostname": "Mushu",
+  "os": "Windows 11",
+  "python": "3.12.13",
+  "torch": "2.11.0+cu128",
+  "device_type": "cuda",
+  "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+  "cpu_cores_logical": 20,
+  "ram_gb": 63.8,
+  "cpu_cores_physical": 14,
+  "power_plugged": true,
+  "battery_percent": 100,
+  "power_plan": "Balanced",
+  "gpu": "NVIDIA RTX 2000 Ada Generation Laptop GPU",
+  "gpu_sm": "sm_89",
+  "gpu_vram_gb": 8.0,
+  "gpu_sm_count": 24,
+  "cuda": "12.8",
+  "driver": "596.59",
+  "gpu_power_default_w": 60.0,
+  "gpu_power_max_w": 80.0,
+  "gpu_max_clock_mhz": 3105.0,
+  "backend_flags": {
+   "float32_matmul_precision": "high",
+   "cudnn_benchmark": true,
+   "cudnn_deterministic": true,
+   "matmul_tf32": true,
+   "cudnn_tf32": true
+  }
+ },
+ "probes": {
+  "matmul_tflops": {
+   "gemm_n": 4096,
+   "fp16": 42.5904742808761,
+   "bf16": 44.455143299353885,
+   "tf32": 20.09681018270475,
+   "fp32": 6.840472947367792
+  },
+  "sustained": {
+   "dtype": "float16",
+   "burst_tflops": 43.058099433413076,
+   "sustained_tflops": 41.09947564238391,
+   "sustained_min_tflops": 40.90893606694819,
+   "sustained_max_tflops": 41.30025465351894
+  },
+  "membw": {
+   "tensor_mb": 256,
+   "copy_gbps": 221.2469405524871,
+   "triad_gbps": 226.66644044269307
+  },
+  "launch_overhead_us": 4.174539999803528,
+  "h2d": {
+   "size_mb": 256,
+   "pinned_gbps": 11.922786437246254,
+   "pageable_gbps": 7.332392182143203,
+   "small_1mb_ms": 0.09742049995111302
+  },
+  "cpu": {
+   "python_loop_mops": 17.635029658354995,
+   "torch_fp32_gflops": 461.7757420074922,
+   "torch_threads": 14
+  }
+ },
+ "workload": {
+  "name": "resnet18-cifar100",
+  "n_train": 50000,
+  "n_val": 10000,
+  "batch_size": 512,
+  "epochs": 40,
+  "drop_last": true,
+  "evals_per_epoch": 1,
+  "steps_per_epoch": 97,
+  "params": 11220132,
+  "fwd_flops_per_img": 1110937600.0,
+  "train_flops_per_img": 3329273856.0,
+  "flops_per_step": 1704588214272.0,
+  "total_train_flops": 6613802271375360.0
+ },
+ "calibration": {
+  "t_step_s": 0.12145392333331984,
+  "t_step_min_s": 0.12076059000003928,
+  "t_step_max_s": 0.12222172000037972,
+  "window_means_s": [
+   0.12222172000037972,
+   0.12145392333331984,
+   0.12076059000003928
+  ],
+  "warmup_s": 10.900770099993679,
+  "soak_block_rates": [
+   8.516897821376535,
+   8.476375368389759,
+   8.408437118495366,
+   8.29306491915391,
+   8.244868224467695,
+   8.221720548458007
+  ],
+  "soak_converged": true,
+  "soak_steps": 996,
+  "backend_flags": {
+   "float32_matmul_precision": "high",
+   "cudnn_benchmark": true,
+   "cudnn_deterministic": true,
+   "matmul_tf32": true,
+   "cudnn_tf32": true
+  },
+  "t_eval_s": 1.5418496999918716,
+  "peak_vram_gb": 3.5725207328796387
+ },
+ "prediction": {
+  "t_step_s": 0.12145392333331984,
+  "epoch_s": 13.322880263323896,
+  "total_s": 550.1723629329499,
+  "total_human": "9.2 min",
+  "throughput_img_s": 3727.722460789379,
+  "mfu": 0.3414850158570621,
+  "t_startup_s": 17.257152399994084
+ },
+ "actual_total_s": 638.4,
+ "notes": "synthetic-data calibration; step recipe = cifar100_hf_train.ipynb section 4"
+}

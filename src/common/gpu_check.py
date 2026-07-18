@@ -422,6 +422,11 @@ def enable_fast_matmul(tf32: bool = True, cudnn_benchmark: bool = True) -> None:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = cudnn_benchmark
+    if cudnn_benchmark:
+        # set_seed() sets cudnn.deterministic=True, and callers run it BEFORE this function --
+        # which silently restricted the autotuner to deterministic-only algorithms.  A caller
+        # asking for speed (benchmark=True) gets the full kernel menu back.
+        torch.backends.cudnn.deterministic = False
 
 
 def get_max_memory(reserve_gib: float = 5.0) -> dict:
