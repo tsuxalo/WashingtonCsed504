@@ -77,7 +77,9 @@ can watch the whole thing work. Open one, pick the `uw-csed504` kernel, and **Ru
 
 > These notebooks are **fast sanity checks** — a few epochs on a subset, just to see it work end to
 > end. The full, hours-long training that produced the published numbers runs from the command line,
-> covered in [Training it yourself](#training-it-yourself) below.
+> covered in [Training it yourself](#training-it-yourself) below. Both the notebooks and the command
+> line import the same `models.py` / `cifar_data.py` / `train_loop.py`, so there is one copy of the
+> training code and nothing to keep in sync.
 
 ---
 
