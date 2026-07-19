@@ -158,11 +158,6 @@ def bar(frac, width=18, color='white'):
     return Text(FULL * n + EMPTY * (width - n), style=color)
 
 
-# Tags that have been alive at any point since this dashboard started. We show only these, so the
-# board tracks the current run's fleet and not every old experiment still sitting in runs/.
-_SESSION_TAGS = set()
-
-
 def render(t0):
     """Build the frame: a hardware panel on top, then one card per model stacked vertically.
 
@@ -172,11 +167,19 @@ def render(t0):
     fit in about 90 columns and never truncate.
     """
     alive = live_tags()
-    _SESSION_TAGS.update(alive)
-    # Only this session's fleet: the runs that have been alive since this dashboard started. Completed
-    # members of the current run stay visible; the old experiments sitting in runs/ from previous days
-    # never appear here, because they are never in `alive`.
-    tags = sorted(_SESSION_TAGS)
+    # This session's fleet only: runs training now, or whose log was written in the last ~18 hours.
+    # That keeps the board on the current overnight run and drops the old experiments in runs/ from
+    # previous days -- and unlike tracking "seen since startup", it survives a dashboard restart, so a
+    # run you kicked off before opening this still shows.
+    recent = time.time() - 18 * 3600
+    tags = set(alive)
+    for p in glob.glob(os.path.join(LOGS, '*.log')):
+        try:
+            if os.path.getmtime(p) > recent:
+                tags.add(os.path.basename(p)[:-4])
+        except OSError:
+            pass
+    tags = sorted(tags)
 
     blocks = []
 
@@ -202,12 +205,22 @@ def render(t0):
         col = COLOR.get(tag, 'white')
         running = tag in alive
         total = _total_epochs(tag)
+        gpu, params = _run_meta(tag)
+
+        # The card title carries the run's size and card, e.g. "resnet18   12M param  cuda:0". The
+        # parameter count is the main reason throughput differs so much between models -- a bigger
+        # model does more math per image -- and the card says which GPU the run is pinned to.
+        title = f'[bold {col}]{tag}[/]'
+        meta = (([f'{params/1e6:.0f}M param'] if params else [])
+                + ([f'cuda:{gpu}'] if gpu is not None else []))
+        if meta:
+            title += '   [dim]' + '  '.join(meta) + '[/]'
 
         # Part A: Nothing logged yet means the run just started, so drop a 'starting...' stub and
         # skip the rest; there are no metrics to draw for it this frame.
         if not rows:
             blocks.append(Panel(Text('starting...', style='yellow'),
-                                title=f'[bold {col}]{tag}', border_style='grey37', padding=(0, 1)))
+                                title=title, border_style='grey37', padding=(0, 1)))
             continue
 
         # Part B: Read the latest finished epoch off rows[-1]: current top-1, best top-1 and the
@@ -267,7 +280,7 @@ def render(t0):
                   Text(f'train{"(aug)" if aug else ""} {tr1:.2%}', style='dim'),
                   health)
         t.add_row(Text(sparkline(top1s, 60), style=col))
-        blocks.append(Panel(t, title=f'[bold {col}]{tag}', border_style='grey37', padding=(0, 1)))
+        blocks.append(Panel(t, title=title, border_style='grey37', padding=(0, 1)))
 
     blocks.append(Text('  ref: WRN-28-10 = 59.0% top-1 / 81.1% top-5 (Chrabaszcz 2017)  |  '
                        f'watching {_fmt(time.time()-t0)}  |  read-only, Ctrl+C safe', style='dim'))
@@ -325,6 +338,29 @@ def _total_epochs(tag):
     except OSError:
         pass
     return total or 40
+
+
+def _run_meta(tag):
+    """Parse which GPU a run is on and its parameter count, from its log header.
+
+    The trainer prints "[tag] device cuda:N (...)" and "[tag] <model>: <N> parameters" at startup.
+    We take the last match of each, so a stale header left by an earlier run in a reused log does not
+    win over the current run's.
+    """
+    p = os.path.join(LOGS, f'{tag}.log')
+    gpu, params = None, None
+    try:
+        with open(p, errors='replace') as f:
+            for line in f:
+                m = re.search(r'device cuda:(\d+)', line)
+                if m:
+                    gpu = int(m.group(1))
+                m = re.search(r'([\d,]+) parameters', line)
+                if m:
+                    params = int(m.group(1).replace(',', ''))
+    except OSError:
+        pass
+    return gpu, params
 
 
 def _fmt(s):
