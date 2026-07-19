@@ -123,13 +123,18 @@ def make_vit_base(num_classes: int = 1000) -> nn.Module:
     return make_vit(num_classes, hidden_dim=768, layers=12, heads=12, mlp_dim=3072, patch_size=4)
 
 
-# The model zoo. Keys are the --model names the training scripts pass, and each value is a builder
-# we call with num_classes. The param counts are the trainable totals from n_params() (see below).
+# The model zoo the training scripts choose from. Each key is a --model name they pass on the command
+# line, and each value is the builder we call with num_classes; the param counts are the trainable
+# totals from n_params() below:
+#   - resnet18 (~11.7M): the CIFAR baseline, ported here unchanged
+#   - resnet50 (~23.5M): a bigger CNN, the capacity control on the CNN side
+#   - vit (~11.0M): parameter-matched to resnet18, so a resnet18-vs-vit gap isn't confounded by size
+#   - vit_base (~86M): does scale rescue the transformer at 1.28M images?
 BUILDERS = {
-    'resnet18': make_resnet18,     # ~11.7M   The CIFAR baseline, ported unchanged.
-    'resnet50': make_resnet50,     # ~23.5M   Bigger CNN, the CNN-side capacity control.
-    'vit': make_vit,               # ~11.0M   Parameter-matched to resnet18.
-    'vit_base': make_vit_base,     # ~86M     Does scale rescue the transformer at 1.28M images?
+    'resnet18': make_resnet18,
+    'resnet50': make_resnet50,
+    'vit': make_vit,
+    'vit_base': make_vit_base,
 }
 
 
@@ -155,8 +160,9 @@ def n_params(m: nn.Module) -> int:
 # ready-to-eval model, so a teammate can use any of our runs with no GPU and no hour of training.
 _RELEASE = 'https://github.com/TrueRottweiler/WashingtonCsed504/releases/download/models-v1'
 
-# What the caller asks for, and how to rebuild it: tag -> (builder name, num_classes). The file on the
-# Release is the tag with its slash turned into a dash, so 'imagenet32/vit' is 'imagenet32-vit.pt'.
+# What the caller asks for, and how to rebuild it: each tag maps to a (builder name, num_classes) pair.
+# The file on the Release is the tag with its slash turned into a dash, so 'imagenet32/vit' is
+# 'imagenet32-vit.pt'.
 WEIGHTS = {
     'imagenet32/resnet18': ('resnet18', 1000),
     'imagenet32/resnet50': ('resnet50', 1000),

@@ -16,6 +16,9 @@ The per-model schedules (the ViTs get the long run they need, the ResNets conver
 """
 import sys
 
+# Kept as a stub so anyone who runs it out of habit gets the note above on stderr and a nonzero exit,
+# instead of silence -- a stale reference to it in some pipeline then fails loudly rather than quietly
+# doing nothing.
 if __name__ == '__main__':
     print(__doc__, file=sys.stderr)
     sys.exit(1)

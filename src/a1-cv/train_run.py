@@ -245,7 +245,7 @@ def main():
           f'grad clip {args.clip} | amp {str(amp_dtype).replace("torch.", "")}'
           f'{" + channels_last" if channels_last else ""}')
     print(f'[{tag}] {epochs} epochs, batch {args.batch}, lr {lr:.4f} '
-          f'({args.warmup}-epoch warmup -> cosine), label smoothing {args.label_smoothing}')
+          f'({args.warmup}-epoch warmup then cosine), label smoothing {args.label_smoothing}')
     print(f'[{tag}] {train_ds.n_batches(args.batch):,} batches/epoch\n', flush=True)
 
 
