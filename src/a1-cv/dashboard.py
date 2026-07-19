@@ -158,6 +158,11 @@ def bar(frac, width=18, color='white'):
     return Text(FULL * n + EMPTY * (width - n), style=color)
 
 
+# Tags that have been alive at any point since this dashboard started. We show only these, so the
+# board tracks the current run's fleet and not every old experiment still sitting in runs/.
+_SESSION_TAGS = set()
+
+
 def render(t0):
     """Build the frame: a hardware panel on top, then one card per model stacked vertically.
 
@@ -167,8 +172,11 @@ def render(t0):
     fit in about 90 columns and never truncate.
     """
     alive = live_tags()
-    tags = sorted({os.path.basename(p).split('.')[0] for p in glob.glob(os.path.join(RUNS, '*.jsonl'))}
-                  | alive)
+    _SESSION_TAGS.update(alive)
+    # Only this session's fleet: the runs that have been alive since this dashboard started. Completed
+    # members of the current run stay visible; the old experiments sitting in runs/ from previous days
+    # never appear here, because they are never in `alive`.
+    tags = sorted(_SESSION_TAGS)
 
     blocks = []
 
@@ -262,7 +270,7 @@ def render(t0):
         blocks.append(Panel(t, title=f'[bold {col}]{tag}', border_style='grey37', padding=(0, 1)))
 
     blocks.append(Text('  ref: WRN-28-10 = 59.0% top-1 / 81.1% top-5 (Chrabaszcz 2017)  |  '
-                       f'elapsed {_fmt(time.time()-t0)}  |  read-only, Ctrl+C safe', style='dim'))
+                       f'watching {_fmt(time.time()-t0)}  |  read-only, Ctrl+C safe', style='dim'))
     return Group(*blocks)
 
 
@@ -276,34 +284,47 @@ def _strong_aug(tag):
     instead of pretending to judge its gap.
     """
     p = os.path.join(LOGS, f'{tag}.log')
+    aug = False
     try:
         with open(p, errors='replace') as f:
             for line in f:
                 if 'strong aug' in line:
-                    return 'True' in line
+                    aug = 'True' in line   # keep scanning; the newest run's line wins
     except OSError:
         pass
-    return False
+    return aug
 
 
 def _total_epochs(tag):
-    """Read the real epoch count from the run's own log header instead of hardcoding it.
+    """Read the real epoch count for the current run, robust to stale content in a reused log.
 
-    Why not just hardcode it? Because we did, and it bit us: the hardcoded table claimed vit_base
-    ran 60 epochs when it actually ran 40, so a completed run got drawn as 'STOPPED' in red. Never
-    hardcode what the process already prints for you; we parse "<N> epochs, batch" out of the
-    header, else fall back to 40.
+    We prefer the live tqdm "epoch <cur>/<tot>" at the tail, because that is written by the run
+    happening right now. If an earlier run (say a smoke test) left a header with a different count
+    at the top of the same log file, a first-match header read would report that stale number -- it
+    once drew a 40-epoch run as 2/2. The tqdm tail cannot be stale; it is the process's current
+    line. We fall back to the newest "<N> epochs, batch" header, then to 40.
     """
     p = os.path.join(LOGS, f'{tag}.log')
+    total = None
     try:
+        # The live tqdm tail first -- "epoch   6/40 train: ...".
+        with open(p, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 8000))
+            tail = f.read().decode('utf-8', 'replace').replace('\r', '\n')
+        for line in reversed(tail.split('\n')):
+            m = re.search(r'epoch\s+\d+/(\d+)', line)
+            if m:
+                return int(m.group(1))
+        # No tqdm yet (run just starting): take the last header, so the newest run wins.
         with open(p, errors='replace') as f:
             for line in f:
                 m = re.search(r'(\d+) epochs, batch', line)
                 if m:
-                    return int(m.group(1))
+                    total = int(m.group(1))
     except OSError:
         pass
-    return 40
+    return total or 40
 
 
 def _fmt(s):
@@ -321,7 +342,9 @@ def main():
     ap.add_argument('--interval', type=float, default=2.0)
     a = ap.parse_args()
 
-    t0 = min([os.path.getmtime(p) for p in glob.glob(os.path.join(LOGS, '*.log'))] or [time.time()])
+    # Elapsed is measured from when this dashboard started, not from log mtimes: old logs from
+    # earlier runs (days ago) would otherwise drag "watching" back to a bogus 100+ hours.
+    t0 = time.time()
     console = Console(legacy_windows=False)
     if a.once:
         console.print(render(t0))
