@@ -126,7 +126,6 @@ def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size,
 
         with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
             logits = model(x)
-            # Mixed targets are never a confident one-hot answer, hence no easy memorization.
             loss = (lam * criterion(logits, y_a) + (1 - lam) * criterion(logits, y_b)
                     if lam < 1.0 else criterion(logits, y_a))
 

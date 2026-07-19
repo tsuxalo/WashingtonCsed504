@@ -203,8 +203,11 @@ def _predict_total_s(dataset, model, total_epochs):
     ref = _ref_ips(model)
     if not ref or not dataset:
         return None
+
+    # Predicted wall clock: images per epoch over throughput, times the epoch count, plus a one-time
+    # startup cost (data upload and autotune) that isn't part of the steady-state per-epoch pace.
     n_train = 1_281_167 if dataset == 'imagenet32' else 50_000
-    return total_epochs * n_train / ref + 15.0     # +15 s one-time startup (data upload + autotune)
+    return total_epochs * n_train / ref + 15.0
 
 
 def render(t0):
@@ -366,7 +369,9 @@ def _strong_aug(tag):
         with open(p, errors='replace') as f:
             for line in f:
                 if 'strong aug' in line:
-                    aug = 'True' in line   # keep scanning; the newest run's line wins
+                    # Keep scanning instead of breaking: if a reused log holds several runs, the last
+                    # 'strong aug' line is the current run's, so the newest one wins.
+                    aug = 'True' in line
     except OSError:
         pass
     return aug
