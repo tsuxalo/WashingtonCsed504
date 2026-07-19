@@ -150,7 +150,7 @@ def main() -> int:
     print('VALIDATION')
     val_x, val_y = convert_split(val_files, out('val_x.npy'), out('val_y.npy'), args.workers)
 
-    # ---- Sanity checks.  Fail loudly HERE rather than after an hour of training. ----
+    # Sanity checks, so a bad prepare fails now rather than after an hour of training.
     print('\nSanity checks:')
     counts = np.bincount(np.asarray(train_y), minlength=N_CLASSES)
     problems = []

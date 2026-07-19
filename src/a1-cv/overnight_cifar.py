@@ -8,11 +8,11 @@ expensive training is never conflated with them.
 
 Use the console instead:
 
-    python train_fleet.py --queue retrain     # CIFAR-10 + CIFAR-100 to convergence, on both cards
+    python train_fleet.py --queue cifar       # CIFAR-10 + CIFAR-100 to convergence, on both cards
     python dashboard.py                        # watch it live
 
 The per-model schedules (the ViTs get the long run they need, the ResNets converge fast) live in the
-'retrain' queue in train_fleet.py.
+'cifar' queue in train_fleet.py.
 """
 import sys
 

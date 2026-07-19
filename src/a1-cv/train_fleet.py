@@ -214,7 +214,7 @@ def run_data_parallel_demo(args):
     spec = resolve_queue(args)[0]
     dataset, model, _ = spec
     print(f'\nDataParallel demo: ONE {model} ({dataset}) split across cards 0 and 1.')
-    print('CAVEAT: measured ~1.0x on these 32x32 models -- the point is to SEE why, not to go faster.\n')
+    print('Note: measured ~1.0x on these 32x32 models -- the point is to see why, not to go faster.\n')
     job = launch(spec, 0, args)                     # --data-parallel makes train_run.py use both cards itself.
     try:
         job['proc'].wait()
