@@ -27,6 +27,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from imagenet_data import GpuImageNet32   # GpuCifar reuses its resident-batch + augmentation machinery
+
 
 def to_device_uint8(hf_split, device, img_key='img', label_key='fine_label'):
     """Decode a HuggingFace image split once, straight onto the device as a uint8 NCHW tensor.
@@ -275,3 +277,64 @@ class GPUImageLoader:
             # sel: (bs,) indices into the resident tensor
             sel = idx[s:s + self.bs]
             yield self._augment(self.x[sel]), self.y[sel]
+
+
+# Published per-channel train-split statistics, plus the class count, for each dataset. We use the
+# standard constants rather than recomputing them so a run normalizes CIFAR exactly as the notebooks
+# and the literature do.
+_CIFAR_STATS = {
+    'cifar10':  ((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616), 10),
+    'cifar100': ((0.5071, 0.4865, 0.4409), (0.2673, 0.2564, 0.2762), 100),
+}
+
+
+class GpuCifar(GpuImageNet32):
+    """CIFAR-10 or CIFAR-100, held resident on the GPU, serving the same augmented batches as
+    GpuImageNet32.
+
+    CIFAR is 32x32 just like ImageNet-32, so there is nothing new to write for the inner loop: this
+    inherits GpuImageNet32's epoch(), n_batches(), _to_float(), and batched crop/flip augmentation
+    unchanged, and the module-level mixup_cutmix / random_erasing_ work on a CIFAR batch as-is. All
+    that differs is where the pixels come from, so __init__ loads torchvision's CIFAR (whose .data is
+    already (N, 32, 32, 3) uint8, the exact layout GpuImageNet32 expects) and sets the same handful of
+    attributes the inherited methods read. It deliberately does not call super().__init__, which would
+    look for the ImageNet-32 arrays.
+    """
+
+    def __init__(self, device: torch.device, dataset: str = 'cifar10', split: str = 'train',
+                 subset: int | None = None, seed: int = 0):
+        from datasets import load_dataset
+
+        if dataset not in _CIFAR_STATS:
+            raise ValueError(f'unknown dataset {dataset!r} (expected cifar10 or cifar100)')
+        mean, std, n_classes = _CIFAR_STATS[dataset]
+
+        # We load from HuggingFace, whose CDN is fast and cached, so this is a one-time download and
+        # instant after. We deliberately avoid torchvision's CIFAR here: its download mirror crawls,
+        # and a truncated local CIFAR-100 tarball sends it into a half-hour re-download. CIFAR-100
+        # keys its labels as 'fine_label' (there is also a 20-way 'coarse_label' we ignore).
+        hf_name = 'uoft-cs/cifar10' if dataset == 'cifar10' else 'uoft-cs/cifar100'
+        label_key = 'label' if dataset == 'cifar10' else 'fine_label'
+        sp = load_dataset(hf_name, split=('train' if split == 'train' else 'test'))
+
+        # Decode the PIL images once into one (N, 32, 32, 3) uint8 array: NHWC, the exact layout
+        # GpuImageNet32 stores and its _to_float() expects.
+        x = np.stack([np.asarray(im.convert('RGB'), np.uint8) for im in sp['img']])
+        y = np.asarray(sp[label_key], np.int64)
+
+        # A random subset for smoke tests. CIFAR files are not class-sorted the way ImageNet-32's are,
+        # but we sample at random anyway so a subset stays representative of every class.
+        if subset is not None and subset < len(x):
+            rng = np.random.default_rng(seed)
+            idx = np.sort(rng.choice(len(x), size=subset, replace=False))
+            x, y = x[idx], y[idx]
+
+        # Set exactly the attributes the inherited methods read: pixels resident as uint8, labels as
+        # int64, the normalization constants shaped to broadcast, and the class count.
+        self.x = torch.from_numpy(np.ascontiguousarray(x)).to(device)
+        self.y = torch.from_numpy(y).to(device)
+        self.device = device
+        self.n = len(self.y)
+        self.mean = torch.tensor(mean, device=device).view(1, 3, 1, 1)
+        self.std = torch.tensor(std, device=device).view(1, 3, 1, 1)
+        self.n_classes = n_classes

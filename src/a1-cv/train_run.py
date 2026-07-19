@@ -1,17 +1,18 @@
 """
-Per-card trainer for ResNet-18 or a ViT on ImageNet-32 (1.28M images, 1000 classes).
+Per-card trainer for a CNN or ViT on ImageNet-32, CIFAR-10, or CIFAR-100 -- all 32x32 images.
 
 One process, one GPU, one model. We run this headless for hours, so it checkpoints every
 epoch and can --resume from the last one (see the checkpoint step in main()). The whole
-dataset lives resident in GPU memory (see data.py), which means there is no DataLoader, no
-worker process, and no CPU in the inner loop -- the data is already sitting where the math
-happens.
+dataset lives resident in GPU memory (imagenet_data / cifar_data), which means there is no
+DataLoader, no worker process, and no CPU in the inner loop -- the data is already sitting
+where the math happens.
 
 Usage and examples:
-    python train_run.py --model resnet18 --gpu 0            # ~40 min
-    python train_run.py --model vit      --gpu 1            # run concurrently on the other card
-    python train_run.py --model resnet18 --smoke-test       # 30-second sanity check, exits
-    python train_run.py --model vit --resume                # pick up from the last checkpoint
+    python train_run.py --model resnet18 --gpu 0                        # ImageNet-32 (the default), ~40 min
+    python train_run.py --dataset cifar100 --model vit --epochs 200     # CIFAR-100 ViT, from the console
+    python train_run.py --model vit --gpu 1                             # run concurrently on the other card
+    python train_run.py --dataset cifar10 --model resnet18 --smoke-test # quick wiring check, exits
+    python train_run.py --model vit --resume                           # pick up from the last checkpoint
 
 Recipes (these are the defaults wired up below):
     resnet18: SGD + momentum, LR scaled linearly with batch size from the CIFAR baseline
@@ -33,6 +34,7 @@ import time
 import torch
 import torch.nn as nn
 
+import cifar_data as C
 import imagenet_data as D
 import train_loop as E
 import models as M
@@ -72,6 +74,8 @@ def main():
     # works; the flags below are only for when you want to deviate from the recipe.
     p = argparse.ArgumentParser()
     p.add_argument('--model', choices=list(M.BUILDERS), required=True)
+    p.add_argument('--dataset', choices=['imagenet32', 'cifar10', 'cifar100'], default='imagenet32',
+                   help='which dataset to train on (default: imagenet32)')
     p.add_argument('--gpu', type=int, default=0)
     p.add_argument('--epochs', type=int, default=40)
     p.add_argument('--batch', type=int, default=512)
@@ -86,7 +90,8 @@ def main():
     p.add_argument('--strong-aug', dest='strong_aug', action='store_true', default=None,
                    help='mixup + CutMix + random erasing (default: ON for ViTs, OFF for CNNs)')
     p.add_argument('--no-strong-aug', dest='strong_aug', action='store_false')
-    p.add_argument('--clip', type=float, default=1.0, help='grad-norm clip (0 to disable)')
+    p.add_argument('--clip', type=float, default=None,
+                   help='grad-norm clip, 0 disables (default: off for resnet18, 1.0 otherwise)')
     args = p.parse_args()
 
 
@@ -106,7 +111,11 @@ def main():
     # We use a separate tag on purpose. Reusing the real tag once appended 2 bogus 50k-subset
     # epochs to the front of the real run's JSONL, which would have quietly corrupted every plot
     # downstream. A distinct smoke-* stem keeps the throwaway history in its own file.
-    tag = args.tag or (f'smoke-{args.model}' if args.smoke_test else args.model)
+    # ImageNet-32 runs keep their bare model name (resnet18, vit, ...) so they stay back-compatible
+    # with the published results; CIFAR runs are prefixed with the dataset, so cifar100_vit never
+    # collides with the ImageNet vit in runs/ or on the dashboard.
+    base = args.model if args.dataset == 'imagenet32' else f'{args.dataset}_{args.model}'
+    tag = args.tag or (f'smoke-{base}' if args.smoke_test else base)
 
 
     # Step 3: Decide strong augmentation by model family when the flag was left unset.
@@ -118,6 +127,14 @@ def main():
     # or --no-strong-aug overrides this.
     if args.strong_aug is None:
         args.strong_aug = args.model.startswith('vit')
+
+
+    # Step 3b: Decide gradient clipping by model when the flag was left unset. The shallow ResNet-18
+    # is stable, and clipping measurably costs it about five points (36.9% vs 41.7% on ImageNet-32),
+    # so it defaults off. ResNet-50, which went to loss=NaN without it, and the fp16 ViTs keep it at
+    # 1.0. Passing --clip overrides this.
+    if args.clip is None:
+        args.clip = 0.0 if args.model == 'resnet18' else 1.0
 
 
     # Step 4: Pin this process to its one card and switch on the fast-math paths.
@@ -149,7 +166,9 @@ def main():
     jsonl_path = os.path.join(OUT_DIR, f'{tag}.jsonl')
 
     epochs = 2 if args.smoke_test else args.epochs
-    subset = 50_000 if args.smoke_test else None
+    # A smoke test trains on a small random subset. CIFAR's whole train split is only 50k, so we take
+    # a smaller slice there than for ImageNet-32.
+    subset = (5_000 if args.dataset.startswith('cifar') else 50_000) if args.smoke_test else None
 
 
     # Step 7: Load both splits straight onto the GPU and report the resident footprint.
@@ -157,9 +176,14 @@ def main():
     # tensors are on the card, no batch ever touches the host again.
     print(f'[{tag}] device {device} ({torch.cuda.get_device_name(device)})')
     t_load = time.time()
-    train_ds = D.GpuImageNet32(device, 'train', subset=subset)
-    val_ds = D.GpuImageNet32(device, 'val', subset=10_000 if args.smoke_test else None)
-    print(f'[{tag}] dataset resident on GPU: {train_ds.gb():.1f} GB train + {val_ds.gb():.1f} GB val '
+    val_subset = (2_000 if args.dataset.startswith('cifar') else 10_000) if args.smoke_test else None
+    if args.dataset == 'imagenet32':
+        train_ds = D.GpuImageNet32(device, 'train', subset=subset)
+        val_ds = D.GpuImageNet32(device, 'val', subset=val_subset)
+    else:
+        train_ds = C.GpuCifar(device, args.dataset, 'train', subset=subset)
+        val_ds = C.GpuCifar(device, args.dataset, 'test', subset=val_subset)
+    print(f'[{tag}] {args.dataset} resident on GPU: {train_ds.gb():.1f} GB train + {val_ds.gb():.1f} GB val '
           f'({train_ds.n:,} + {val_ds.n:,} images) in {time.time()-t_load:.0f}s')
 
 
@@ -217,8 +241,9 @@ def main():
 
 
     # Step 13: Echo the resolved config so the log header records exactly what this run did.
-    print(f'[{tag}] strong aug (mixup/cutmix/erasing): {args.strong_aug} | grad clip {args.clip} | '
-          f'amp {str(amp_dtype).replace("torch.", "")}{" + channels_last" if channels_last else ""}')
+    print(f'[{tag}] dataset {args.dataset} | strong aug (mixup/cutmix/erasing): {args.strong_aug} | '
+          f'grad clip {args.clip} | amp {str(amp_dtype).replace("torch.", "")}'
+          f'{" + channels_last" if channels_last else ""}')
     print(f'[{tag}] {epochs} epochs, batch {args.batch}, lr {lr:.4f} '
           f'({args.warmup}-epoch warmup -> cosine), label smoothing {args.label_smoothing}')
     print(f'[{tag}] {train_ds.n_batches(args.batch):,} batches/epoch\n', flush=True)
@@ -251,7 +276,7 @@ def main():
     # counting the wrapper would report the wrong parameter total.
     total = time.time() - t_start
     print(f'\n[{tag}] DONE. best val top1 {best:.2%} in {E.fmt_time(total)}')
-    json.dump({'tag': tag, 'model': args.model, 'params': M.n_params(
+    json.dump({'tag': tag, 'dataset': args.dataset, 'model': args.model, 'params': M.n_params(
                    model.module if isinstance(model, nn.DataParallel) else model),
                'epochs': epochs, 'batch': args.batch, 'lr': lr,
                'best_top1': best, 'seconds': total, 'history': history},
