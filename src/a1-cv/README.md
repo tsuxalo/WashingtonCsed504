@@ -134,25 +134,32 @@ python train_run.py --dataset cifar10  --model vit      --epochs 200 --gpu 1
 The flags:
 
 - **`--dataset`** — `cifar10`, `cifar100`, or `imagenet32`. CIFAR downloads itself the first time you
-  use it; ImageNet needs the one-time prep in step 3.
+  use it; ImageNet needs the one-time prep at the end of this section.
 - **`--model`** — `resnet18`, `resnet50`, `vit`, or `vit_base`.
 - **`--epochs`** — how long to train. CNNs converge quickly (30–40 epochs); ViTs need many more
   (around 200) to reach their best.
 - **`--gpu N`** — which GPU to use (default `0`). **`--resume`** picks up from the last checkpoint if a
   run was interrupted.
 
-### 2. Train several at once — `train_fleet.py`
+### 2. Train a whole batch — `train_fleet.py`
 
-On a machine with two GPUs, the "fleet" keeps both busy: it runs one model per card and, as each
-finishes, starts the next from a queue. Two ready-made queues cover this study:
+The eight models in the results table weren't trained one at a time by hand. `train_fleet.py` trains a
+batch of them, and on a two-GPU machine keeps both cards busy — one model per card, starting the next
+as each finishes. It ships with the two batches that make up this study:
 
 ```bash
-python train_fleet.py --queue retrain    # the four CIFAR models (each ViT gets its 200 epochs)
-python train_fleet.py                     # the ImageNet-32 study: ResNet-18/50 and ViT / ViT-base
+python train_fleet.py --queue cifar       # the four CIFAR models       (~30 min on two GPUs)
+python train_fleet.py --queue imagenet    # the four ImageNet-32 models  (several hours)
 ```
 
-On a single-GPU laptop you don't need this — just run `train_run.py` (step 1) one model at a time. The
-fleet is a convenience for the two-GPU workstation.
+`cifar` trains `resnet18` and `vit` on both CIFAR-10 and CIFAR-100; `imagenet` trains `resnet18`,
+`resnet50`, `vit`, and `vit_base` on ImageNet-32. Between them they reproduce every number in the
+results table. Each batch already carries the right schedule per model — the ViTs get 200 epochs (a
+Transformer needs a long run to converge), the ResNets far fewer — so you don't have to remember them.
+Add `--smoke` to prove the wiring in about a minute first.
+
+On a single-GPU laptop you don't need the fleet at all — run the models one at a time with
+`train_run.py` (step 1).
 
 ### 3. Watch it live — `dashboard.py`
 

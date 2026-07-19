@@ -10,12 +10,11 @@ means two runs in flight at all times, until the queue drains. Each run is just 
 (the per-card trainer we already have), so this file only adds the "who runs where, and what is
 next" part.
 
-Usage:
-    python train_fleet.py                              # the ImageNet-32 capstone on both cards (the long run)
-    python train_fleet.py --queue retrain              # the CIFAR retraining (the ViT/clip fixes), ~30 min
-    python train_fleet.py --smoke                      # same wiring, but --smoke-test each job (~30s) to prove it
-    python train_fleet.py --queue retrain --smoke      # prove the CIFAR wiring in ~1 min
-    python train_fleet.py --dataset cifar100 --models resnet18 vit --epochs 40   # a custom queue
+Usage (pick a preset batch of models to train, or a custom one):
+    python train_fleet.py --queue cifar          # train the four CIFAR models on both cards (~30 min)
+    python train_fleet.py --queue imagenet       # train the four ImageNet-32 models (several hours)
+    python train_fleet.py --queue cifar --smoke  # prove the wiring first (~1 min), then it exits
+    python train_fleet.py --dataset cifar100 --models resnet18 vit --epochs 40   # a custom batch
     python train_fleet.py --data-parallel --models vit_base   # one model split across both cards (see below)
 
 Watch it from two other terminals:
@@ -25,7 +24,7 @@ Watch it from two other terminals:
 Why a fleet and not DataParallel? There are two ways to spend a second card, and they are not the
 same thing.
 
-A fleet (this file's default) runs a different model on each card at the same time. Both cards sit
+A fleet (the normal mode) runs a different model on each card at the same time. Both cards sit
 at about 90% or more, and the whole study finishes in roughly half the wall-clock, because the
 ResNet and the ViT train simultaneously instead of one after the other. This is what a
 hyperparameter or architecture search does, and it is the honest win on this hardware.
@@ -56,20 +55,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 LOGS = os.path.join(HERE, 'logs')
 
-# The named queues. Each entry is (dataset, model, epochs); epochs=None means "use --epochs".
+# The two preset batches you can train. Each entry is (dataset, model, epochs); epochs=None means
+# "use the --epochs default". These are exactly the eight models in the study's results table, so
+# running a preset reproduces that half of the numbers.
 #
-# capstone: the ImageNet-32 study. ResNet-18 and the ViT are the head-to-head crossover pair;
-#   resnet50 and vit_base are the capacity controls, so a win cannot be dismissed as "the bigger
-#   model just had more parameters". Starting the two families first lands one on each card, so the
-#   dashboard immediately shows a CNN and a Transformer training side by side.
-# retrain: the minimal CIFAR retraining. The two ViTs get the long schedule they actually need (they
-#   were the under-scheduled ones); the ResNets converge fast. Both ViTs lead the queue, so one lands
-#   on each card and the quick ResNets slot in behind them.
+#   cifar     the four CIFAR models: resnet18 and vit, on both CIFAR-10 and CIFAR-100. The ViTs get
+#             200 epochs, because a Vision Transformer needs a long schedule to converge; the ResNets
+#             converge in a fraction of that, so they get far fewer.
+#   imagenet  the four ImageNet-32 models: resnet18, resnet50, vit, and vit_base, 40 epochs each. The
+#             two extra sizes (resnet50, vit_base) are controls -- they check that a win is the
+#             architecture, not just "the bigger model had more parameters".
+#
+# Within each list the first two entries land one per card, so both GPUs start immediately.
 QUEUES = {
-    'capstone': [('imagenet32', 'resnet18', None), ('imagenet32', 'vit', None),
-                 ('imagenet32', 'resnet50', None), ('imagenet32', 'vit_base', None)],
-    'retrain':  [('cifar100', 'vit', 200), ('cifar10', 'vit', 200),
+    'cifar':    [('cifar100', 'vit', 200), ('cifar10', 'vit', 200),
                  ('cifar100', 'resnet18', 40), ('cifar10', 'resnet18', 30)],
+    'imagenet': [('imagenet32', 'resnet18', None), ('imagenet32', 'vit', None),
+                 ('imagenet32', 'resnet50', None), ('imagenet32', 'vit_base', None)],
 }
 
 
@@ -79,14 +81,17 @@ def tag_base(dataset, model):
 
 
 def resolve_queue(args):
-    """Turn the CLI options into the list of (dataset, model, epochs) specs to run.
+    """Turn the CLI options into the list of (dataset, model, epochs) specs to run, or None when the
+    user has not said what to train.
 
-    A custom --models list wins, spread over the single --dataset at --epochs; otherwise we use the
+    A custom --models list wins (spread over the single --dataset at --epochs); otherwise we use the
     named preset from --queue, whose specs carry their own per-model epochs.
     """
     if args.models:
         return [(args.dataset, m, None) for m in args.models]
-    return list(QUEUES[args.queue])
+    if args.queue:
+        return list(QUEUES[args.queue])
+    return None
 
 
 def launch(spec, gpu, args):
@@ -219,19 +224,27 @@ def run_data_parallel_demo(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description='Fill both GPUs with training runs (the model-factory way).')
-    p.add_argument('--queue', choices=list(QUEUES), default='capstone',
-                   help='a named preset queue: capstone (ImageNet-32) or retrain (the CIFAR fixes)')
+    p = argparse.ArgumentParser(
+        description='Train a batch of models across both GPUs, one model per card, from a queue.')
+    p.add_argument('--queue', choices=list(QUEUES),
+                   help="which preset batch to train: 'cifar' (the four CIFAR models, ~30 min on two "
+                        "GPUs) or 'imagenet' (the four ImageNet-32 models, several hours)")
     p.add_argument('--models', nargs='+', default=None,
-                   help='a custom queue of models instead of a preset (uniform --dataset and --epochs)')
+                   help='train a custom list of models instead of a preset (uses --dataset and --epochs)')
     p.add_argument('--dataset', default='imagenet32',
-                   help='dataset for --models (a named --queue carries its own datasets)')
-    p.add_argument('--epochs', type=int, default=40, help='epochs per run when a spec does not set one')
-    p.add_argument('--n-gpu', type=int, default=2, help='cards to spread across')
-    p.add_argument('--smoke', action='store_true', help='--smoke-test each job: prove the wiring in ~30s')
+                   help='dataset for a custom --models list (a preset --queue carries its own datasets)')
+    p.add_argument('--epochs', type=int, default=40,
+                   help='epochs per run when a spec sets none of its own (the imagenet preset uses this)')
+    p.add_argument('--n-gpu', type=int, default=2, help='how many GPUs to spread across')
+    p.add_argument('--smoke', action='store_true',
+                   help='run each job as a quick --smoke-test to prove the wiring, then exit')
     p.add_argument('--data-parallel', action='store_true',
                    help='instead of a fleet, run ONE model split across both cards (the honest ~1x demo)')
     args = p.parse_args()
+
+    if not args.queue and not args.models:
+        p.error('nothing to train -- choose a preset (--queue cifar or --queue imagenet) or a custom '
+                'batch (--models resnet18 vit --dataset cifar100).')
 
     if args.data_parallel:
         run_data_parallel_demo(args)
