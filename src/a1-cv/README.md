@@ -1,111 +1,194 @@
-# CSED 504 — A1 Computer Vision
+# CSED 504 · A1 — CNNs vs. Vision Transformers
 
-**CNNs vs. Transformers, and what data scale does to the answer** — one training pipeline, made fast
-on every machine (Mac / Windows / Linux / Colab), taken from CIFAR-10 (50k images) up to ImageNet-32
-(1.28M images), for both CNNs and Vision Transformers.
+**Do convolutional networks (CNNs) or Vision Transformers (ViTs) make better image classifiers — and
+does the answer change as you add more training data?**
 
-The scientific write-up — results, controls, the crossover, and the engineering notes — lives one
-level up in [`../README.md`](../README.md). **This file is the map of the folder: what each file is,
-and where to start.**
+This project trains both families of models on three datasets of the same tiny 32×32 images, stepping
+from small to large — CIFAR-10 (50k images) → CIFAR-100 (50k images, harder) → ImageNet-32 (1.28M
+images) — and measures not only which is more *accurate*, but what each one *costs* to train.
 
-## Start here
+### The result: a crossover
 
-1. **[`report_factory_performance.ipynb`](report_factory_performance.ipynb)** — the capstone. The whole
-   journey in one notebook: how we took the coursework training loop and made it fast, the measured
-   war-stories (feeding the GPU, the flip that stalled the pipeline, mixed precision × memory format),
-   the CNN-vs-Transformer crossover, and predicting a run's cost before launching it. Runs top to bottom
-   in a couple of minutes on `MODE='fast'`. **Read this one first.**
-2. Then the three per-dataset training notebooks below, in increasing scale.
+| dataset | images / classes | best CNN | best ViT | winner |
+|---|---|---|---|---|
+| CIFAR-10 | 50k / 10 | **92.7%** | 85.1% | CNN |
+| CIFAR-100 | 50k / 100 | **74.3%** | 62.4% | CNN |
+| ImageNet-32 | 1.28M / 1000 | 41.7% | **43.0%** | ViT |
 
-## Notebooks
+*(top-1 accuracy)*
 
-| notebook | what it does |
-|---|---|
-| `report_factory_performance.ipynb` | the capstone / journey — **start here** |
-| `cifar10_train.ipynb` | CIFAR-10 (50k, 10 classes) — the small-data study, self-contained |
-| `cifar100_train.ipynb` | CIFAR-100 from the HuggingFace Hub — a second data source through the same models |
-| `imagenet32_train.ipynb` | ImageNet-32 (1.28M, 1000 classes) — the scoreboard + crossover, and how to launch the real run |
+A CNN is built with the assumption that nearby pixels belong together, which is a big head start when
+data is scarce. A ViT has no such assumption — it has to *learn* that structure from the data — so it
+only pulls ahead once there's a lot of data. That flip, from CNN winning to ViT winning, is the
+**crossover**. Accuracy is only half the story, though: the ViTs cost several times more to train, and
+scaling a ViT up can make it *worse*. The full picture is in **`report_crossover.ipynb`**.
 
-Each dataset notebook is a **fast** interactive check (a small subset, a few epochs — a minute or two)
-so you can watch it work end to end. The full, expensive training runs from the terminal (below), never
-in a notebook, so the two never get conflated; the reports read whichever results are on disk.
+---
 
-## Get the trained models — no training required
+## Setup (once)
 
-Every trained model is published on the **[`models-v1` release](https://github.com/TrueRottweiler/WashingtonCsed504/releases/tag/models-v1)** (weights only, ~45–350 MB each). You do **not** clone them (they're too big for git) and you do **not** retrain — `load_model` downloads the one you ask for, caches it locally, and hands back a ready-to-eval model. No GPU needed.
-
-```python
-from models import load_model          # run from inside src/a1-cv/ (with the uw-csed504 env active)
-net = load_model("cifar100/vit")       # downloads once, returns a ready nn.Module in eval mode
-```
-
-Tags: `imagenet32/{resnet18,resnet50,vit,vit_base}`, `cifar10/{resnet18,vit}`, `cifar100/{resnet18,vit}`. Top-1 accuracy:
-
-| | CIFAR-10 | CIFAR-100 | ImageNet-32 |
-|---|---|---|---|
-| **CNN** (ResNet) | 92.7% | 74.3% | 41.7% |
-| **ViT** | 85.1% | 62.4% | 43.0% |
-
-The **crossover**: the CNN wins on small/medium data, the ViT only once the data is large (1000 classes, 1.28M images). See `report_crossover.ipynb` for the cost/benefit story behind these numbers.
-
-## Python — the shared machinery
-
-| file | role |
-|---|---|
-| `models.py` | the architectures: ResNet-18/50 and ViT / ViT-base, each given a 32×32-friendly stem |
-| `cifar_data.py` | GPU-resident loader for small in-memory images — CIFAR-10 **and** CIFAR-100 |
-| `imagenet_data.py` | GPU-resident loader for ImageNet-32 (memory-maps the prepared arrays; GPU-side augmentation) |
-| `imagenet_prepare.py` | **one-time** decode of HuggingFace ImageNet-1k-32×32 (JPEG-in-parquet) into flat `.npy` arrays |
-| `train_loop.py` | the epoch loop, top-1/top-5 metrics, checkpointing, JSONL logging — shared by every run |
-| `train_run.py` | CLI: **one** training run on one GPU |
-| `train_fleet.py` | fills **both** GPUs — one model per card, concurrently, until a queue drains |
-| `dashboard.py` | live terminal dashboard: both cards, every run's curves + ETA (read-only) |
-| `perf/` | the training-cost estimator (`perfkit.py`), a headless collector (`collect.py`), its notebook, and the results DB |
-
-Why two data loaders? `cifar_data.py` takes images already in memory (torchvision hands you decoded
-arrays); `imagenet_data.py` memory-maps 3.9 GB of prepared `uint8` off disk. Only ImageNet needs the
-separate `imagenet_prepare.py` step, because it ships as JPEG-encoded blobs inside parquet and is far too
-big to decode per batch — CIFAR arrives ready to use.
-
-## Data & outputs (git-ignored, all regenerable)
-
-```
-data/
-  cifar10/     torchvision CIFAR-10   (auto-downloads)
-  cifar100/    torchvision CIFAR-100  (auto-downloads)
-  imagenet32/  prepared .npy arrays   (3.9 GB — see imagenet_prepare.py)
-runs/          checkpoints + per-epoch metrics (one set per run name)
-logs/          per-run stdout
-```
-
-## Running the real training (from the console)
-
-All full training — every dataset — runs from the terminal through one trainer, so it never conflates
-with the fast notebooks. `--dataset` picks the data; the recipe (optimizer, augmentation, LR, gradient
-clipping) follows the model automatically.
+Everything here runs in the shared **`uw-csed504`** conda environment. If you don't have it yet, the
+top-level [`../../README.md`](../../README.md) has one-command setup scripts for Windows, macOS, and
+Linux. Once it's installed:
 
 ```bash
-# CIFAR (data auto-downloads from HuggingFace on first use):
-python src/a1-cv/train_run.py --dataset cifar100 --model vit --epochs 200
-#   ...or the whole CIFAR retraining across both GPUs in one command (both ViTs get 200 epochs):
-python src/a1-cv/train_fleet.py --queue retrain
-
-# ImageNet-32 needs its 3.9 GB prepared once first:
-git clone https://huggingface.co/datasets/benjamin-paine/imagenet-1k-32x32   # accept the ImageNet terms
-python src/a1-cv/imagenet_prepare.py
-python src/a1-cv/train_fleet.py                       # the ImageNet-32 capstone on both cards
-
-# watch any run live, from another terminal:
-python src/a1-cv/dashboard.py
+conda activate uw-csed504
 ```
 
-`--smoke-test` runs a quick sanity check and exits — run it first. `--resume` picks up from the last
-checkpoint. Results land in `runs/`; the report notebooks read them.
+and select the **"Python (uw-csed504)"** kernel when you open a notebook.
 
-> **Teammates don't need any of this.** To *use* a trained model, skip straight to `load_model` above —
-> no dataset, no GPU, no training.
+---
 
-## Shared / elsewhere
-- Device detection (`get_device`, seeds, multi-GPU selection) is `../common/gpu_check.py` — shared with
-  the other assignments, so it stays out of this folder.
-- Superseded experiments and one-off scripts were moved to `../archive/`.
+## The fastest way in: use a trained model
+
+You do **not** need a GPU, the datasets, or to run any training to use the results. Every trained model
+is published on the [**`models-v1` release**](https://github.com/TrueRottweiler/WashingtonCsed504/releases/tag/models-v1),
+and one function downloads whichever you ask for:
+
+```python
+# run this from inside src/a1-cv/, with the uw-csed504 environment active
+from models import load_model
+
+net = load_model("cifar100/vit")     # downloads the weights once, caches them, returns the model
+```
+
+`net` is an ordinary PyTorch model in eval mode — feed it a batch of 32×32 images and it classifies
+them. The eight available tags:
+
+- `imagenet32/resnet18`, `imagenet32/resnet50`, `imagenet32/vit`, `imagenet32/vit_base`
+- `cifar10/resnet18`, `cifar10/vit`
+- `cifar100/resnet18`, `cifar100/vit`
+
+The weights live on the release rather than in git because they're large (45–350 MB each); `load_model`
+keeps its downloads in a local `weights/` folder that git ignores.
+
+---
+
+## Explore in the notebooks
+
+Each notebook runs top-to-bottom in **a minute or two** — they use a small, quick configuration so you
+can watch the whole thing work. Open one, pick the `uw-csed504` kernel, and **Run All**.
+
+| notebook | what it is |
+|---|---|
+| **`report_crossover.ipynb`** | **Start here.** The findings: the crossover table above, the accuracy-vs-training-cost tradeoff, and how to load the models. Reads results from disk, so it re-runs instantly. |
+| `report_factory_performance.ipynb` | The engineering journey — how a plain coursework training loop was made fast enough to do this study, with the measured war-stories along the way. |
+| `cifar10_train.ipynb`, `cifar100_train.ipynb`, `imagenet32_train.ipynb` | One per dataset: watch a CNN and a ViT actually train, and (for ImageNet) read the scoreboard. |
+
+> These notebooks are **fast sanity checks** — a few epochs on a subset, just to see it work end to
+> end. The full, hours-long training that produced the published numbers runs from the command line,
+> covered in [Training it yourself](#training-it-yourself) below.
+
+---
+
+## What's in this folder
+
+**The notebooks** are listed above. Behind them:
+
+| file | what it does |
+|---|---|
+| `models.py` | The two architectures — ResNet-18/50 and ViT / ViT-base — each given a stem that works on 32×32 images. Also home to `load_model`. |
+| `cifar_data.py`, `imagenet_data.py` | Load a dataset **onto the GPU once** and hand back augmented batches from there — no per-batch copying (see [How it's fast](#how-its-fast-the-one-idea-worth-knowing)). |
+| `imagenet_prepare.py` | A one-time step that unpacks ImageNet-32 into fast flat arrays. Only needed if you want to *train* on ImageNet. |
+| `train_loop.py` | The training loop shared by every run: forward/backward, accuracy metrics, checkpointing, logging. |
+| `train_run.py` | Trains **one** model on **one** GPU. |
+| `train_fleet.py` | Trains **several** models across **both** GPUs at once. |
+| `dashboard.py` | A live, read-only terminal view of every training run in progress — accuracy curves, throughput, ETA. |
+| `perf/` | A small tool that estimates how long a training run will take *before* you launch it. |
+
+**Created while you run things (all git-ignored, all regenerable):**
+
+```
+data/      the datasets, downloaded on first use
+runs/      each run's checkpoint (.pt) and per-epoch metrics (.jsonl) — the reports read these
+logs/      each run's console output
+weights/   trained models that load_model has downloaded
+```
+
+---
+
+## Training it yourself
+
+You only need this section to **reproduce** the training. To just *use* a model, use
+[`load_model`](#the-fastest-way-in-use-a-trained-model) above — no training required.
+
+All real training runs from the terminal (never from a notebook, so quick experiments and long runs
+never get confused with each other). There are just **two commands**, and both save their results to
+`runs/` where the reports can read them.
+
+### 1. Train one model — `train_run.py`
+
+You pick a **dataset** and a **model**; the training recipe (optimizer, learning rate, data
+augmentation, gradient clipping) is chosen automatically to suit the model, so you don't have to know
+those details.
+
+```bash
+# First, a quick wiring check — runs a couple of tiny epochs, then exits:
+python train_run.py --dataset cifar100 --model resnet18 --smoke-test
+
+# Then the real run:
+python train_run.py --dataset cifar100 --model resnet18 --epochs 40
+python train_run.py --dataset cifar10  --model vit      --epochs 200 --gpu 1
+```
+
+The flags:
+
+- **`--dataset`** — `cifar10`, `cifar100`, or `imagenet32`. CIFAR downloads itself the first time you
+  use it; ImageNet needs the one-time prep in step 3.
+- **`--model`** — `resnet18`, `resnet50`, `vit`, or `vit_base`.
+- **`--epochs`** — how long to train. CNNs converge quickly (30–40 epochs); ViTs need many more
+  (around 200) to reach their best.
+- **`--gpu N`** — which GPU to use (default `0`). **`--resume`** picks up from the last checkpoint if a
+  run was interrupted.
+
+### 2. Train several at once — `train_fleet.py`
+
+On a machine with two GPUs, the "fleet" keeps both busy: it runs one model per card and, as each
+finishes, starts the next from a queue. Two ready-made queues cover this study:
+
+```bash
+python train_fleet.py --queue retrain    # the four CIFAR models (each ViT gets its 200 epochs)
+python train_fleet.py                     # the ImageNet-32 study: ResNet-18/50 and ViT / ViT-base
+```
+
+On a single-GPU laptop you don't need this — just run `train_run.py` (step 1) one model at a time. The
+fleet is a convenience for the two-GPU workstation.
+
+### 3. Watch it live — `dashboard.py`
+
+From a **second** terminal, while training is running:
+
+```bash
+python dashboard.py
+```
+
+It shows one panel per run — its progress, accuracy curve, throughput, and both a predicted and a live
+ETA — plus GPU utilization. It only reads files, so it's safe to open and close any time.
+
+### One-time ImageNet-32 setup
+
+CIFAR downloads itself automatically. ImageNet-32 is different: it ships as JPEG images packed inside
+parquet files, which is far too slow to decode on every batch. So we decode it once, up front, into
+flat arrays (~3.9 GB on disk):
+
+```bash
+git clone https://huggingface.co/datasets/benjamin-paine/imagenet-1k-32x32   # accept the ImageNet terms first
+python imagenet_prepare.py
+```
+
+You only need this if you're training on ImageNet — not to use a published `imagenet32/*` model.
+
+---
+
+## How it's fast (the one idea worth knowing)
+
+At 32×32, a modern GPU can train these small models faster than an ordinary data pipeline can feed it —
+the usual PyTorch `DataLoader` with CPU workers becomes the bottleneck, and the GPU sits idle waiting
+for the next batch. So we flip it around: **load the entire dataset into GPU memory once, and do the
+image augmentation on the GPU too.** No workers, no per-batch copying from CPU to GPU, nothing for the
+CPU to do in the training loop.
+
+This only works because the images are tiny — ImageNet-32's whole training set is 3.9 GB as `uint8`,
+which fits comfortably in a modern GPU's memory. You could never do this with the full 224×224 ImageNet
+(hundreds of GB). `report_factory_performance.ipynb` walks through this trick and the other speedups
+that made the study practical.
