@@ -136,11 +136,15 @@ def gpus():
 
 
 def live_tags():
-    """Which models have a train_run.py process actually running right now?
+    """Which runs have a train_run.py process actually running right now?
 
-    We ask Windows for every python.exe whose command line mentions train_run.py, then pull the
-    --model value out of each into a set of live tags. That's what tells a 'DONE' card from a
-    'STOPPED' one, and lets a card exist before its first JSONL row is written.
+    We ask Windows for every python.exe whose command line mentions train_run.py, then rebuild each
+    run's tag from its --dataset and --model exactly the way train_run.py does: the bare model name on
+    ImageNet-32, dataset-prefixed on CIFAR. That's what tells a 'DONE' card from a 'STOPPED' one, and
+    lets a card exist before its first JSONL row is written.
+
+    We must rebuild the whole tag, not just read --model. Matching on --model alone drew a live
+    cifar100_vit as STOPPED, because its process says '--model vit' while its tag is 'cifar100_vit'.
     """
     try:
         out = subprocess.run(
@@ -148,7 +152,16 @@ def live_tags():
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Where-Object { $_.CommandLine -match 'train_run.py' } | ForEach-Object { $_.CommandLine }"],
             capture_output=True, text=True, timeout=8).stdout
-        return {m.group(1) for m in re.finditer(r'--model\s+(\S+)', out)}
+        tags = set()
+        for line in out.splitlines():
+            mm = re.search(r'--model\s+(\S+)', line)
+            if not mm:
+                continue
+            model = mm.group(1)
+            md = re.search(r'--dataset\s+(\S+)', line)
+            dataset = md.group(1) if md else 'imagenet32'
+            tags.add(model if dataset == 'imagenet32' else f'{dataset}_{model}')
+        return tags
     except Exception:
         return set()
 
