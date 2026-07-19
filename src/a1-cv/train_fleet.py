@@ -6,19 +6,19 @@ fed. This script is the small scheduler that does that for us.
 
 We give it a queue of models to train. It keeps one run alive on each GPU, and whenever a card
 finishes its run it immediately pulls the next model off the queue and starts it there. Two cards
-means two runs in flight at all times, until the queue drains. Each run is just `train.py --gpu N`
+means two runs in flight at all times, until the queue drains. Each run is just `train_run.py --gpu N`
 (the per-card trainer we already have), so this file only adds the "who runs where, and what is
 next" part.
 
 Usage:
-    python fleet.py                         # the capstone queue on both cards (this is the 8-hour run)
-    python fleet.py --smoke                 # same wiring, but --smoke-test each job (~30s) to prove it
-    python fleet.py --models resnet18 vit   # a custom queue
-    python fleet.py --epochs 40             # override the schedule length
-    python fleet.py --data-parallel --models vit_base   # one model split across both cards (see below)
+    python train_fleet.py                         # the capstone queue on both cards (this is the 8-hour run)
+    python train_fleet.py --smoke                 # same wiring, but --smoke-test each job (~30s) to prove it
+    python train_fleet.py --models resnet18 vit   # a custom queue
+    python train_fleet.py --epochs 40             # override the schedule length
+    python train_fleet.py --data-parallel --models vit_base   # one model split across both cards (see below)
 
 Watch it from two other terminals:
-    python monitor.py                       # the live dashboard: both cards, every run's curves, ETA
+    python dashboard.py                       # the live dashboard: both cards, every run's curves, ETA
     nvidia-smi dmon -s u                    # the raw truth; the sm column is the compute engine
 
 Why a fleet and not DataParallel? There are two ways to spend a second card, and they are not the
@@ -47,8 +47,8 @@ import subprocess
 import sys
 import time
 
-# HERE is this folder (src/a1-imagenet32); train.py, monitor.py, runs/ and logs/ all live here.
-# PY is the exact Python running this script, so the child train.py runs in the same conda env
+# HERE is this folder (src/a1-cv); train_run.py, dashboard.py, runs/ and logs/ all live here.
+# PY is the exact Python running this script, so the child train_run.py runs in the same conda env
 # (uw-csed504). We never hardcode "python", because a bare "python" is often the wrong interpreter.
 # LOGS is where each run's console output is written.
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +64,7 @@ DEFAULT_QUEUE = ['resnet18', 'vit', 'resnet50', 'vit_base']
 
 def launch(model, gpu, args):
     """
-    Start one train.py run on one card and return a live handle we can poll later.
+    Start one train_run.py run on one card and return a live handle we can poll later.
 
     Inputs:
      - model: the model name to train (e.g. 'resnet18')
@@ -79,7 +79,7 @@ def launch(model, gpu, args):
     # The -u flag makes the child's stdout unbuffered, so the dashboard sees each tqdm line
     # immediately instead of in 4 KB gulps. Buffered child output is the classic "why is my log
     # empty?" bug.
-    cmd = [PY, '-u', '-W', 'ignore', os.path.join(HERE, 'train.py'),
+    cmd = [PY, '-u', '-W', 'ignore', os.path.join(HERE, 'train_run.py'),
            '--model', model, '--gpu', str(gpu), '--epochs', str(args.epochs)]
     if args.smoke:
         cmd.append('--smoke-test')                 # Tiny subset, 2 epochs, then it exits: a wiring check.
@@ -88,7 +88,7 @@ def launch(model, gpu, args):
 
     # Step 2: Send this run's console output to logs/<model>.log. There are two reasons for this.
     #
-    # First, monitor.py scrapes the current epoch's tqdm bar from the tail of this file, because the
+    # First, dashboard.py scrapes the current epoch's tqdm bar from the tail of this file, because the
     # JSONL only updates once per finished epoch; without the log the dashboard looks frozen for
     # minutes. Second, an 8-hour run's output has to survive us closing this terminal.
     os.makedirs(LOGS, exist_ok=True)
@@ -126,7 +126,7 @@ def run_fleet(args):
         if queue:
             slots[g] = launch(queue.pop(0), g, args)
 
-    print('\n  -> both cards are now training. Watch:  python monitor.py   (and Task Manager: '
+    print('\n  -> both cards are now training. Watch:  python dashboard.py   (and Task Manager: '
           'set a GPU graph to "Compute_0"/"Cuda" for BOTH cards)\n')
 
     # Step 2: The supervision loop. Poll each card about once a second, and when a run finishes,
@@ -166,7 +166,7 @@ def run_fleet(args):
 
 def run_data_parallel_demo(args):
     """
-    The honest one-model-two-cards path. Runs a single train.py with --data-parallel so you can
+    The honest one-model-two-cards path. Runs a single train_run.py with --data-parallel so you can
     watch both cards light up in Task Manager, and then compare its img/s to the same model on one
     card (the fleet, or the notebook's DataParallel section) to see the roughly 1.0x for yourself.
 
@@ -176,7 +176,7 @@ def run_data_parallel_demo(args):
     model = args.models[0]
     print(f'\nDataParallel demo: ONE {model} split across cards 0 and 1.')
     print('CAVEAT: measured ~1.0x on these 32x32 models -- the point is to SEE why, not to go faster.\n')
-    job = launch(model, 0, args)                    # --data-parallel makes train.py use both cards itself.
+    job = launch(model, 0, args)                    # --data-parallel makes train_run.py use both cards itself.
     try:
         job['proc'].wait()
     except KeyboardInterrupt:

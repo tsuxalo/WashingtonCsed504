@@ -8,10 +8,10 @@ worker process, and no CPU in the inner loop -- the data is already sitting wher
 happens.
 
 Usage and examples:
-    python train.py --model resnet18 --gpu 0            # ~40 min
-    python train.py --model vit      --gpu 1            # run concurrently on the other card
-    python train.py --model resnet18 --smoke-test       # 30-second sanity check, exits
-    python train.py --model vit --resume                # pick up from the last checkpoint
+    python train_run.py --model resnet18 --gpu 0            # ~40 min
+    python train_run.py --model vit      --gpu 1            # run concurrently on the other card
+    python train_run.py --model resnet18 --smoke-test       # 30-second sanity check, exits
+    python train_run.py --model vit --resume                # pick up from the last checkpoint
 
 Recipes (these are the defaults wired up below):
     resnet18: SGD + momentum, LR scaled linearly with batch size from the CIFAR baseline
@@ -33,8 +33,8 @@ import time
 import torch
 import torch.nn as nn
 
-import data as D
-import engine as E
+import imagenet_data as D
+import train_loop as E
 import models as M
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), 'runs')
@@ -225,7 +225,7 @@ def main():
 
 
     # Step 14: The epoch loop -- train, evaluate, step the schedule, log, then checkpoint.
-    # The per-batch work lives in engine.py; this loop just sequences an epoch and, crucially,
+    # The per-batch work lives in train_loop.py; this loop just sequences an epoch and, crucially,
     # saves a checkpoint at the end of every epoch so --resume always has a fresh-as-of-last-epoch
     # state to come back to.
     t_start = time.time()

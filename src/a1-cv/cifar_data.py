@@ -1,5 +1,5 @@
 """
-gpu_data.py: GPU-resident data and augmentation for small (CIFAR-scale) images.
+cifar_data.py: GPU-resident data and augmentation for small (CIFAR-scale) images.
 
 A torch DataLoader hands augmentation off to CPU worker processes. That is the right tool when
 decode and augment is the bottleneck (see the workers lesson), but for 32x32 images a modern GPU

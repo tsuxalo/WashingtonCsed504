@@ -34,18 +34,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'imagenet32')
 
 
 def load_stats() -> dict:
-    """Read stats.json (per-channel mean/std plus class count) that prepare_data.py computed for us.
+    """Read stats.json (per-channel mean/std plus class count) that imagenet_prepare.py computed for us.
 
     We always load these numbers rather than hardcoding CIFAR's: they were measured from this dataset's
     own pixels, and normalizing ImageNet-32 with CIFAR's constants would quietly skew every image.
     """
     p = os.path.join(DATA_DIR, 'stats.json')
     if not os.path.exists(p):
-        raise FileNotFoundError(f'{p} not found -- run prepare_data.py first.')
+        raise FileNotFoundError(f'{p} not found -- run imagenet_prepare.py first.')
     return json.load(open(p))
 
 

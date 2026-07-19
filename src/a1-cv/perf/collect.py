@@ -12,7 +12,7 @@ Run this on every machine configuration you want in the database, plugged in:
 Each invocation appends ONE json record to results/ (fingerprint + probes + calibration +
 prediction + actual) -- commit those files; they are the estimator's training data.
 
-The calibrated training step below is a faithful copy of ../a1-cv/cifar100_hf_train.ipynb
+The calibrated training step below is a faithful copy of ../cifar100_train.ipynb
 section 4.  If that recipe changes, change build_step() to match (and the same code in
 training_time_estimator.ipynb) -- calibrating a different recipe predicts a different run.
 """
@@ -25,7 +25,7 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-for _rel in ('.', '../common', '../a1-cv', '../a1-imagenet32'):
+for _rel in ('.', '..', '../../common'):
     _p = os.path.normpath(os.path.join(_HERE, _rel))
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
@@ -40,8 +40,8 @@ import perfkit as pk
 def build_step(model_name: str, bs: int, n_train: int, n_val: int, num_classes: int, device):
     """The real training step + eval on synthetic data of identical shape (augmentation is
     shape-static, so t_step matches real data within ~2% and no dataset download is needed)."""
-    import models as M                     # ../a1-imagenet32
-    from gpu_data import GPUImageLoader    # ../a1-cv
+    import models as M                     # .. (the a1-cv modules)
+    from cifar_data import GPUImageLoader  # .. (the a1-cv modules)
 
     mean, std = (0.5071, 0.4865, 0.4409), (0.2673, 0.2564, 0.2762)
     xtr = torch.randint(0, 256, (n_train, 3, 32, 32), dtype=torch.uint8, device=device)
@@ -195,7 +195,7 @@ def main() -> None:
         err = (pred['total_s'] - t_startup - args.actual_seconds) / args.actual_seconds
         print(f"[collect] vs actual {pk.fmt_duration(args.actual_seconds)}: error {err:+.1%}")
 
-    notes = args.notes or 'collect.py; synthetic-data calibration; recipe = cifar100_hf_train.ipynb section 4'
+    notes = args.notes or 'collect.py; synthetic-data calibration; recipe = cifar100_train.ipynb section 4'
     if args.quick:
         notes += ' [QUICK MODE -- burst-biased, not database-grade]'
     rec = pk.make_record(fp, probes, work, cal, {**pred, 'mfu': mfu, 't_startup_s': t_startup},

@@ -31,8 +31,9 @@ That is the trade:
 **So: where is the crossover?** That is the whole project.
 
 - `a1-cv/cifar10_train.ipynb` — **CIFAR-10, 50,000 images, 10 classes.** The small-data side.
-- `a1-imagenet32/` — **ImageNet-1k downsampled to 32×32: 1,281,167 images, 1000 classes.** 25× more data,
-  *identical image size*, so the models port over with no architectural change at all.
+- `a1-cv/` (`imagenet_data.py`, `train_run.py`, `imagenet32_train.ipynb`) — **ImageNet-1k downsampled to
+  32×32: 1,281,167 images, 1000 classes.** 25× more data, *identical image size*, so the models port over
+  with no architectural change at all.
 
 ---
 
@@ -190,18 +191,23 @@ Two notes for anyone reading the code:
 ```
 src/
   a1-cv/
-    cifar10_train.ipynb      the CIFAR-10 study (self-contained; runs anywhere with PyTorch)
-  a1-imagenet32/
-    prepare_data.py          ONE-TIME: parquet/JPEG -> raw uint8 arrays (~30 seconds)
-    data.py                  GPU-resident dataset + GPU-side augmentation
-    models.py                the four architectures
-    engine.py                train/eval loop, top-1/top-5, checkpointing, JSONL logging
-    train.py                 CLI: one training run
-    scheduler.py             keeps both GPUs busy with a queue of runs
-    monitor.py               live dashboard (read-only)
-    data/                    generated arrays (4.1 GB, gitignored)
-    runs/                    checkpoints + per-epoch metrics (JSONL)
-    logs/                    stdout of each run
+    report_factory_performance.ipynb   the capstone / journey (start here)
+    cifar10_train.ipynb                CIFAR-10 study (self-contained)
+    cifar100_train.ipynb               CIFAR-100 from the HuggingFace Hub
+    imagenet32_train.ipynb             ImageNet-32 scoreboard + crossover
+    models.py                          the four architectures (32x32 stems)
+    cifar_data.py                      GPU-resident loader for CIFAR-10/100
+    imagenet_data.py                   GPU-resident ImageNet-32 dataset + GPU-side augmentation
+    imagenet_prepare.py                ONE-TIME: parquet/JPEG -> raw uint8 arrays (~30 seconds)
+    train_loop.py                      train/eval loop, top-1/top-5, checkpointing, JSONL logging
+    train_run.py                       CLI: one training run
+    train_fleet.py                     keeps both GPUs busy with a queue of runs
+    dashboard.py                       live dashboard (read-only)
+    perf/                              training-cost estimator (perfkit) + results DB
+    data/{cifar10,cifar100,imagenet32} datasets (gitignored; imagenet32 is ~3.9 GB)
+    runs/  logs/                       checkpoints + per-epoch metrics, and stdout, per run
+  common/
+    gpu_check.py                       device detection + multi-GPU selection (shared)
 ```
 
 ### Setup
@@ -210,15 +216,15 @@ src/
 # 1. get the dataset (gated -- you must accept the ImageNet terms on HuggingFace first)
 git clone https://huggingface.co/datasets/benjamin-paine/imagenet-1k-32x32
 
-# 2. decode it once into raw arrays (~30s, writes 4.1 GB)
-python src/a1-imagenet32/prepare_data.py
+# 2. decode it once into raw arrays (~30s, writes ~3.9 GB to data/imagenet32/)
+python src/a1-cv/imagenet_prepare.py
 
 # 3. train
-python src/a1-imagenet32/train.py --model resnet18 --gpu 0 --epochs 40
-python src/a1-imagenet32/train.py --model vit      --gpu 1 --epochs 60
+python src/a1-cv/train_run.py --model resnet18 --gpu 0 --epochs 40
+python src/a1-cv/train_run.py --model vit      --gpu 1 --epochs 60
 
 # 4. watch it
-python src/a1-imagenet32/monitor.py
+python src/a1-cv/dashboard.py
 ```
 
 `--smoke-test` runs a 30-second sanity check on a small subset and exits. **Always run it first.**
@@ -250,7 +256,7 @@ ImageNet-sized spatial dimensions to pay off; at CIFAR scale it is all overhead.
 **Learning-rate scaling: `lr = 0.1 × batch/256`, not `/128`.** We used the CIFAR baseline (0.1 @ 128)
 and got lr=0.4 at batch 512 — double the correct value. ResNet-18 slowly diverged (accuracy *peaked at
 epoch 2* then fell) and **ResNet-50 went to `loss = NaN` on epoch 1**. A 2× LR error is not a tuning
-detail; it is the difference between training and not training. `engine.py` now aborts immediately on a
+detail; it is the difference between training and not training. `train_loop.py` now aborts immediately on a
 NaN loss.
 
 **Deep ResNets at large batch need `zero_init_residual=True`.** ResNet-50 hit NaN at *both* lr 0.4 and
@@ -296,9 +302,11 @@ impossible. Do not read the train/val gap off the training printout — score th
 
 ## 9. What to look at first
 
-- The CIFAR notebook, `a1-cv/cifar10_train.ipynb` — it explains the whole pipeline, cites the CSED 502
-  NumPy code that each PyTorch call replaces, and contains the CNN-vs-ViT comparison at small scale.
-- `a1-imagenet32/data.py` — the GPU-resident dataset. This is the most unusual thing we built.
-- `a1-imagenet32/results.ipynb` — **the results.** Reads the per-epoch metrics off disk, prints the
+- **`a1-cv/report_factory_performance.ipynb`** — the capstone: the whole journey from the coursework
+  loop to a fast, cross-platform, CNN-and-Transformer model factory, with the measured war-stories.
+- `a1-cv/cifar10_train.ipynb` — explains the whole pipeline, cites the CSED 502 NumPy code that each
+  PyTorch call replaces, and contains the CNN-vs-ViT comparison at small scale.
+- `a1-cv/imagenet_data.py` — the GPU-resident dataset. This is the most unusual thing we built.
+- `a1-cv/imagenet32_train.ipynb` — **the results.** Reads the per-epoch metrics off disk, prints the
   scoreboard, plots the learning curves and the crossover. It does no training; re-run it any time.
-- `a1-imagenet32/monitor.py` — the live dashboard. Run it while training. Shows both GPUs and every run.
+- `a1-cv/dashboard.py` — the live dashboard. Run it while training. Shows both GPUs and every run.

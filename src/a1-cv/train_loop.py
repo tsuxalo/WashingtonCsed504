@@ -1,5 +1,5 @@
 """
-engine.py -- the training loop, metrics, and checkpointing for a multi-hour run.
+train_loop.py -- the training loop, metrics, and checkpointing for a multi-hour run.
 
 train_one_epoch and evaluate are the same functions as cifar10_train.ipynb. We proved they are
 architecture-agnostic when the ViT trained through them with zero changes. What we bolt on here is
@@ -107,7 +107,7 @@ def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size,
         y_a = y_b = y
         lam = 1.0
         if strong_aug:
-            import data as _D
+            import imagenet_data as _D
             _D.random_erasing_(x)
             x, y_a, y_b, lam = _D.mixup_cutmix(x, y)
 

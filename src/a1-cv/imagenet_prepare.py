@@ -1,5 +1,5 @@
 """
-prepare_data.py -- one-time conversion of ImageNet-1k-32x32 from parquet/JPEG to raw uint8 arrays.
+imagenet_prepare.py -- one-time conversion of ImageNet-1k-32x32 from parquet/JPEG to raw uint8 arrays.
 
 WHY THIS EXISTS
 ---------------
@@ -21,9 +21,9 @@ project tractable; it is not an optimization we are doing for fun.
 
 USAGE
 -----
-    python prepare_data.py                      # uses the defaults below
-    python prepare_data.py --force              # re-do it even if outputs exist
-    python prepare_data.py --workers 16         # override the process count
+    python imagenet_prepare.py                      # uses the defaults below
+    python imagenet_prepare.py --force              # re-do it even if outputs exist
+    python imagenet_prepare.py --workers 16         # override the process count
 
 OUTPUT (into --out-dir, gitignored -- 4 GB does not belong in git)
     train_x.npy   uint8  (1281167, 32, 32, 3)      3.9 GB
@@ -50,7 +50,7 @@ from tqdm import tqdm
 # Default location of the cloned dataset repo (a sibling of the course repo).
 DEFAULT_DATA = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'imagenet-1k-32x32', 'data'))
-DEFAULT_OUT = os.path.normpath(os.path.join(os.path.dirname(__file__), 'data'))
+DEFAULT_OUT = os.path.normpath(os.path.join(os.path.dirname(__file__), 'data', 'imagenet32'))
 
 IMG_SHAPE = (32, 32, 3)
 N_CLASSES = 1000
@@ -187,7 +187,7 @@ def main() -> int:
 
     gb = (train_x.nbytes + val_x.nbytes) / 1e9
     print(f'\nWrote {gb:.1f} GB to {os.path.abspath(args.out_dir)} in {(time.time()-t0)/60:.1f} min')
-    print(f'  stats.json written -- train.py reads mean/std from it.')
+    print(f'  stats.json written -- train_run.py reads mean/std from it.')
 
     if problems:
         print('\nPROBLEMS FOUND:')

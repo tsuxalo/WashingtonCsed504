@@ -1,5 +1,5 @@
 """
-monitor.py, one live screen for the whole ImageNet-32 training fleet.
+dashboard.py, one live screen for the whole ImageNet-32 training fleet.
 
 Four training processes, each spraying its own tqdm bar into its own log file, is unreadable.
 So we don't watch the processes at all. We read what they write instead: runs/*.jsonl plus the
@@ -13,8 +13,8 @@ never touch the training processes. So you can start us, stop us, run several co
 mid-run, and nothing downstream even notices.
 
 Usage:
-    python monitor.py                 # redraw every 2s until you hit Ctrl+C
-    python monitor.py --once          # print one snapshot and exit (nice for logs/screenshots)
+    python dashboard.py                 # redraw every 2s until you hit Ctrl+C
+    python dashboard.py --once          # print one snapshot and exit (nice for logs/screenshots)
 
 Why read the files instead of the processes? The trainers already persist everything worth
 knowing: finished-epoch metrics to JSONL, and live per-batch progress to the tqdm tail. Tailing
@@ -136,9 +136,9 @@ def gpus():
 
 
 def live_tags():
-    """Which models have a train.py process actually running right now?
+    """Which models have a train_run.py process actually running right now?
 
-    We ask Windows for every python.exe whose command line mentions train.py, then pull the
+    We ask Windows for every python.exe whose command line mentions train_run.py, then pull the
     --model value out of each into a set of live tags. That's what tells a 'DONE' card from a
     'STOPPED' one, and lets a card exist before its first JSONL row is written.
     """
@@ -146,7 +146,7 @@ def live_tags():
         out = subprocess.run(
             ['powershell', '-NoProfile', '-Command',
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'train.py' } | ForEach-Object { $_.CommandLine }"],
+             "Where-Object { $_.CommandLine -match 'train_run.py' } | ForEach-Object { $_.CommandLine }"],
             capture_output=True, text=True, timeout=8).stdout
         return {m.group(1) for m in re.finditer(r'--model\s+(\S+)', out)}
     except Exception:
