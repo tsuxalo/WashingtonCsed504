@@ -1,312 +1,144 @@
-# CSED 504 — A1 Computer Vision: CNNs vs. Transformers, and What Data Scale Does to the Answer
+# A1 · Computer Vision — CNNs vs. Vision Transformers
 
-**Status: main training complete. The headline result SURVIVED its controls (see
-[§3](#3-did-we-rig-the-race-the-controls)). Two baseline re-runs are still in flight to settle one
-methodology wart, noted honestly below.**
+This is the write-up for Assignment 1 (Computer Vision); A2 covers NLP separately. For how to set up,
+load a trained model, or run the training yourself, see [`a1-cv/README.md`](a1-cv/README.md). This file
+is the *what we found, and why*.
 
----
+## The question
 
-## 1. The question
+Two families of image model make opposite bets.
 
-There are two families of image models, and they make opposite bets.
+A **CNN** (we use ResNet) has an assumption built into its wiring: nearby pixels belong together. It
+slides a small filter across the image, so it recognizes a cat whether the cat sits in the corner or the
+middle, without being taught to. Assumptions baked into an architecture like this are called *inductive
+biases*, and they act like free training data.
 
-A **CNN** (ResNet) has an assumption hardwired into its structure: *nearby pixels belong together.* It
-slides a small filter across the image, so it automatically knows that a cat is a cat whether it sits
-in the corner or the middle. Nobody teaches it this — it is in the wiring. In ML jargon these free
-assumptions are called **inductive biases**.
+A **Vision Transformer** (ViT) has almost none of that. It cuts the image into small patches, treats
+each as a token, and lets every token attend to every other. It does not even start out knowing which
+patches are neighbors — that has to be learned from the data.
 
-A **Vision Transformer** (ViT) has almost none of that. It cuts the image into tiles ("patches"),
-treats each as a token, and lets every token attend to every other token. It does not even know that
-two tiles are adjacent — that has to be *learned* from data.
+So the CNN begins with a head start the ViT has to earn. The bet the ViT literature makes is that, given
+enough data, a Transformer can *learn* better assumptions than we can hand-code, and overtake. The
+question this project asks is: **where does that crossover happen?** We answer it by training both
+families on the same 32×32 images at three data scales.
 
-That is the trade:
+## The result
 
-| | CNN | Transformer |
-|---|---|---|
-| Assumptions built in | strong (locality, translation invariance) | almost none |
-| Must learn spatial structure from data | no | **yes** |
-| On a small dataset | strong | weak — not enough data |
-| On a huge dataset | plateaus | **overtakes** — it learns better assumptions than we hardcoded |
+| dataset | images / classes | best CNN | best ViT | winner |
+|---|---|---|---|---|
+| CIFAR-10 | 50k / 10 | **92.7%** | 85.1% | CNN |
+| CIFAR-100 | 50k / 100 | **74.3%** | 62.6% | CNN |
+| ImageNet-32 | 1.28M / 1000 | 41.7% | **43.0%** | ViT |
 
-**So: where is the crossover?** That is the whole project.
+*(top-1 accuracy; the CNN is ResNet-18, the ViT a parameter-matched 11M model)*
 
-- `a1-cv/cifar10_train.ipynb` — **CIFAR-10, 50,000 images, 10 classes.** The small-data side.
-- `a1-cv/` (`imagenet_data.py`, `train_run.py`, `imagenet32_train.ipynb`) — **ImageNet-1k downsampled to
-  32×32: 1,281,167 images, 1000 classes.** 25× more data, *identical image size*, so the models port over
-  with no architectural change at all.
+The winner flips. On the two smaller datasets the CNN's built-in locality is decisive; on ImageNet-32 —
+25× more data at the same image size — the ViT's learned representation finally wins. The absolute
+numbers aren't comparable across rows (1000 classes is a far harder problem than 10), but the *sign of
+the gap* is, and it changes.
 
----
+For scale: the paper that introduced ImageNet-32 (Chrabaszcz et al., 2017) reports 59.0% top-1 for a
+much larger network trained much longer. Our 41–43% from an 11M-parameter model in 40 epochs is a sane
+number in that light — random guessing on 1000 classes is 0.1%.
 
-## 2. Results so far
+## Did we rig the race?
 
-### CIFAR-10 (50k images) — finished
+A 1.3-point win only means something if the two models were treated fairly, so we ran controls.
 
-| model | params | epochs | test top-1 |
-|---|---|---|---|
-| ResNet-18 (CNN) | 11.2M | 20 | **92.50%** |
-| ViT (CNN's recipe) | 10.7M | 20 | 55.18% |
-| ViT (proper ViT recipe) | 10.7M | 60 | 73.03% |
+The ViT needs a different recipe than the CNN, heavier data augmentation most of all. Given only the
+CNN's light crop-and-flip, our first ImageNet ViT simply *memorized* the training set: 97% train accuracy
+against 33% validation, on 1.28 million images. So the fair question isn't "same recipe," it's "did the
+ViT's win come from any single advantage the CNN didn't get?" Three controls answer it:
 
-**The CNN wins by ~19 points.** Note the middle row: the ViT trained with the CNN's own recipe scores
-55%, and *the same model* with a transformer recipe scores 73%. Nothing about the architecture changed
-between those two rows — only the optimizer, schedule, and augmentation. **Most of the ViT's apparent
-weakness is recipe, not architecture.** The remaining gap is the real cost of having no inductive bias
-on a small dataset.
+- **The ViT with no epoch advantage** (the CNN's 40 epochs) still scores 42.3%, above the best CNN. The
+  win isn't bought with training time.
+- **The CNN given the ViT's heavy augmentation** drops to 33.9% — mixup makes the CNN *worse*.
+- **Bigger models don't close it:** ResNet-50 (2× the parameters) and ViT-base (8×) both land near the
+  smaller models. Within our compute budget, more parameters bought nothing.
 
-### ImageNet-32 (1.28M images) — complete
+The middle control is the interesting one, and it explains why the recipes differ. Heavy augmentation
+isn't a bonus the CNN would want — it hurts the CNN. It's a substitute for the inductive bias the ViT
+lacks: the CNN is already regularized by its own structure (weight sharing and locality physically limit
+what it can memorize), while the ViT has nothing holding it back, so the augmentation has to. The two
+families need different recipes because they have different problems.
 
-| run | family | params | epochs | mixup | val top-1 | val top-5 |
-|---|---|---|---|---|---|---|
-| **vit** | ViT | 11.1M | 60 | yes | **42.76%** | 66.33% |
-| **vit_40ep** | ViT | 11.1M | 40 | yes | **42.33%** | 66.68% |
-| vit_base | ViT | 85.9M | 40 | yes | 41.56% | 63.49% |
-| **resnet18** | CNN | 11.7M | 40 | no | **41.54%** | 66.86% |
-| resnet50 | CNN | 25.5M | 40 | no | 41.32% | 66.19% |
-| resnet18_60ep | CNN | 11.7M | 60 | no | 37.06% | 62.58% |
-| resnet18_aug60 | CNN | 11.7M | 60 | **yes** | 33.91% | 59.43% |
+One earlier wrinkle, now fixed: gradient clipping, added to stabilize ResNet-50, quietly cost ResNet-18
+about five points. The CNN numbers above use the un-clipped run, and clipping now defaults off for the
+models that don't need it.
 
-**Every ViT configuration beat every CNN configuration.** Best ViT 42.76%, best CNN 41.54%.
+## What we're comparing
 
-Reference point: the paper that created this dataset ([Chrabaszcz et al.
-2017](https://arxiv.org/abs/1707.08819)) reports **59.0% top-1 / 81.1% top-5** for a much larger
-WRN-28-10 trained longer. So 41–43% from an 11M-parameter model in 40–60 epochs is a sane number.
-Random guessing on 1000 classes is 0.1%.
-
-### The crossover
-
-```
-CIFAR-10     (50k):    CNN 92.5%   |  ViT 73.0%   ->  CNN ahead by 19.5 points
-ImageNet-32  (1.28M):  CNN 41.5%   |  ViT 42.8%   ->  ViT ahead by  1.2 points
-```
-
-(The absolute numbers are not comparable across datasets — ImageNet-32 has 1000 classes, so everything
-is lower. What *is* comparable is the **sign of the gap**: the CNN leads on the left, the ViT leads on
-the right.)
-
-**This is the crossover the ViT literature predicts, reproduced on our own hardware in a
-parameter-matched comparison.** 25× more data flipped the winner.
-
----
-
-## 3. Did we rig the race? The controls
-
-The winning ViT was given **two advantages the CNN never got**: 60 epochs instead of 40, and heavy
-augmentation (mixup + CutMix + random erasing) instead of just crop+flip. A 1.2-point win, with two
-uncontrolled advantages, is not a result. So we ran the controls.
-
-**Why the ViT got those advantages at all:** our first ImageNet-32 ViT run used the CNN's light
-augmentation, and the ViT **memorized the training set** — 97.4% train accuracy against 32.6%
-validation, a 65-point gap, on 1.28 *million* images. The ResNet, with the same light augmentation,
-stayed healthy (+8.7% gap).
-
-### What the controls found
-
-| control | result | what it says |
-|---|---|---|
-| **`vit_40ep`** — ViT cut to the CNN's 40 epochs | **42.33%** — still beats the CNN's 41.54% | The win is **not** bought with extra epochs. |
-| **`resnet18_60ep`** — CNN given the ViT's 60 epochs | 37.06% | More epochs did not help the CNN. |
-| **`resnet18_aug60`** — CNN given 60 epochs **and** mixup | **33.91%** | Giving the CNN the ViT's exact advantages made it **7.6 points WORSE.** |
-
-**The headline survives, and the decisive control broke the opposite way from what we expected.**
-
-### The deepest finding: augmentation is a *substitute* for inductive bias
-
-Mixup **helps the Transformer enormously and actively hurts the CNN** (33.91% vs 37.06%, identical
-except for mixup). That is not a quirk — it follows directly from the architecture:
-
-- The ViT has **no inductive bias to restrain it.** Given only crop+flip, it memorized 1.28M images.
-  Heavy augmentation is what stops it — it *replaces* the constraint the architecture doesn't provide.
-- The CNN **cannot easily memorize.** Weight sharing and locality physically limit what it can
-  represent, so it is *already* regularized by its own structure. Pile mixup on top and you are simply
-  making its job harder for no benefit.
-
-So heavy augmentation is not a free advantage we forgot to share. It is a tool for a problem **only the
-Transformer has.**
-
-### Scale was not the lever — data was
-
-- `vit_base` (85.9M params, 8× the small ViT) scored **41.56%** — it did **not** beat the 11.1M ViT.
-- `resnet50` (25.5M params, 2× ResNet-18) scored **41.32%** — it did **not** beat ResNet-18.
-
-Both bigger models were still improving when their schedules ended, so this is a statement about our
-**compute budget**, not proof that scaling stops working. But within this budget: **more parameters
-bought nothing. More *data* flipped the result.**
-
----
-
-## 4. The models
-
-All four see identical data and are adapted for 32×32 inputs the same way. The stock torchvision models
-target 224×224 ImageNet and would destroy a 32×32 image, so:
-
-- **ResNets:** replace the 7×7 stride-2 stem conv with a 3×3 stride-1 conv, and delete the early
-  max-pool. (Otherwise a 32×32 image is crushed to 8×8 before any real work happens.)
-- **ViTs:** `patch_size=4`, giving an 8×8 grid = **64 tokens**. The ImageNet default of 16 would give a
-  2×2 grid — *four* tokens for a whole image, which is useless.
-
-Note these are the *same* adaptations used in the CIFAR notebook. Because ImageNet-32 is also 32×32,
-**the models port over with no changes at all** — only `num_classes` moves from 10 to 1000.
+All four models see identical data and are adapted for 32×32 the same way. Torchvision's stock models
+target 224×224 and would destroy a tiny image, so the ResNets get a 3×3 stride-1 stem with no early
+max-pool (otherwise a 32×32 image is crushed to 8×8 before any real work), and the ViTs use a patch size
+of 4 for an 8×8 grid of 64 tokens (the default of 16 would give four tokens for the whole image).
 
 | | resnet18 | resnet50 | vit | vit_base |
 |---|---|---|---|---|
 | family | CNN | CNN | Transformer | Transformer |
-| params | 11.7M | 25.5M | 11.1M | 85.9M |
-| depth | 18 layers | 50 layers | 6 blocks | 12 blocks |
-| width | — | — | 384, 6 heads | 768, 12 heads |
-| throughput | 17.7k img/s | 6.3k img/s | 13.7k img/s | 2.8k img/s |
-| **question it answers** | the baseline | is it just "bigger CNN wins"? | **the crossover** | does scaling the ViT help? |
+| parameters | 11.7M | 25.5M | 11.1M | 85.9M |
+| its job | the CNN baseline | is it just "bigger CNN wins"? | the crossover | does scaling the ViT help? |
 
-`resnet18` (11.7M) and `vit` (11.1M) are deliberately **parameter-matched** — that is the fair fight;
-neither can win by being bigger.
+`resnet18` (11.7M) and `vit` (11.1M) are parameter-matched on purpose: that's the fair fight, and neither
+can win just by being larger.
 
----
+The recipes differ by family, because each needs something different:
 
-## 5. The training recipes
-
-The two families are trained differently, on purpose. This is not favoritism; it is what each needs.
-
-| | CNNs | Transformers |
+| | CNN | Transformer |
 |---|---|---|
-| optimizer | SGD + Nesterov momentum 0.9 | **AdamW** |
-| learning rate | **0.2** (= 0.1 × batch/256) | **0.001** |
-| weight decay | 5e-4 | 0.05 |
-| augmentation | random crop + horizontal flip | crop + flip **+ mixup + CutMix + random erasing** |
-| gradient clipping | 1.0 | 1.0 |
+| optimizer | SGD + Nesterov momentum | AdamW |
+| learning rate | 0.2 (scaled as 0.1 × batch/256) | 0.001 |
+| augmentation | crop + flip | crop + flip + mixup + CutMix + erasing |
 
-Identical for everything: batch 512, 5-epoch linear **warmup** → cosine decay, label smoothing 0.1,
-mixed precision (fp16 autocast + GradScaler), and the same 1.28M images.
+Everything else is shared: batch 512, a 5-epoch warmup into cosine decay, label smoothing, mixed
+precision. Two things worth knowing if you read the code: a Transformer's warmup isn't optional (without
+it the attention softmax saturates on the first noisy batches and never recovers), and AdamW's weight
+decay isn't comparable to SGD's — AdamW decouples decay from the gradient, so the same-looking number
+means something different.
 
-Two notes for anyone reading the code:
+## Engineering notes — what surprised us
 
-- **Warmup is not optional for a transformer.** Without it the attention softmax saturates on the first
-  few noisy batches and the model lands in a bad place it never escapes. (This is why minGPT's trainer
-  in CSED 503 had a warmup schedule.)
-- **AdamW's `weight_decay=0.05` is not comparable to SGD's `5e-4`.** AdamW *decouples* decay from the
-  gradient, so the number means something different. Do not read across.
+The study was only practical because the training pipeline is fast, and making it fast taught us a few
+things worth writing down.
 
----
+- **The whole dataset lives in GPU memory.** ImageNet-32 as raw `uint8` is 3.9 GB and the card has 96 GB,
+  so we upload it once and generate every augmented batch on the GPU: no DataLoader, no worker processes,
+  no per-batch copy from the host. This only works because the images are tiny — the real 224×224 ImageNet
+  would be about 190 GB.
+- **Find out which side is waiting before optimizing.** A single CPU core augments about 4,000 images a
+  second; the GPU trains at about 13,000. Low GPU utilization during training means you're CPU-bound, and
+  no amount of GPU tuning helps until you move the work off the CPU.
+- **`channels_last` is slower at 32×32, not faster.** The usual "free speedup for convnets" needs
+  ImageNet-sized images to pay off; at CIFAR scale it's pure overhead. Measure before copying advice.
+- **A learning-rate error is the difference between training and not training.** We briefly scaled the LR
+  from the wrong baseline and got double the correct value: ResNet-18's accuracy peaked at epoch 2 and
+  fell, and ResNet-50 diverged to NaN on epoch 1. The trainer now aborts immediately on a NaN loss.
+- **On a GPU, a Python loop over samples is the enemy.** Our first random-erasing augmentation looped over
+  the fraction of the batch being erased and cut ViT throughput by 3×; rewriting it as one broadcast mask
+  restored it. A few hundred tiny kernel launches per batch is all overhead.
+- **A second GPU buys a second experiment, not a faster one.** The cards are power-limited, so two jobs on
+  one card just split its throughput. The second card's real use is to run a *different* model — which is
+  what `train_fleet.py` does. (Splitting one model across both cards measured 0.98× here.)
+- **Augmented-train accuracy isn't comparable to clean-test accuracy.** They're different exams; with heavy
+  augmentation the training number can even fall below the test number. Don't read overfitting off the
+  training printout — this one bit us more than once.
 
-## 6. Repo layout & how to run it
+## Status and honest caveats
 
-```
-src/
-  a1-cv/
-    report_factory_performance.ipynb   the capstone / journey (start here)
-    cifar10_train.ipynb                CIFAR-10 study (self-contained)
-    cifar100_train.ipynb               CIFAR-100 from the HuggingFace Hub
-    imagenet32_train.ipynb             ImageNet-32 scoreboard + crossover
-    models.py                          the four architectures (32x32 stems)
-    cifar_data.py                      GPU-resident loader for CIFAR-10/100
-    imagenet_data.py                   GPU-resident ImageNet-32 dataset + GPU-side augmentation
-    imagenet_prepare.py                ONE-TIME: parquet/JPEG -> raw uint8 arrays (~30 seconds)
-    train_loop.py                      train/eval loop, top-1/top-5, checkpointing, JSONL logging
-    train_run.py                       CLI: one training run
-    train_fleet.py                     keeps both GPUs busy with a queue of runs
-    dashboard.py                       live dashboard (read-only)
-    perf/                              training-cost estimator (perfkit) + results DB
-    data/{cifar10,cifar100,imagenet32} datasets (gitignored; imagenet32 is ~3.9 GB)
-    runs/  logs/                       checkpoints + per-epoch metrics, and stdout, per run
-  common/
-    gpu_check.py                       device detection + multi-GPU selection (shared)
-```
+The training is complete and all eight models are published (see [`a1-cv/README.md`](a1-cv/README.md)).
 
-### Setup
+- **Nothing here is fully converged.** Most runs were still improving when their schedule ended; longer
+  schedules would raise every number, and would help `vit_base` most (86M parameters in 40 epochs is
+  undertrained).
+- **One seed per configuration.** We haven't measured run-to-run variance, so the ViT's ~1-point margin on
+  ImageNet-32 is suggestive, not decisive.
+- We report accuracy on the official 50k validation split; ImageNet's test split has no public labels.
 
-```bash
-# 1. get the dataset (gated -- you must accept the ImageNet terms on HuggingFace first)
-git clone https://huggingface.co/datasets/benjamin-paine/imagenet-1k-32x32
+## Where to look
 
-# 2. decode it once into raw arrays (~30s, writes ~3.9 GB to data/imagenet32/)
-python src/a1-cv/imagenet_prepare.py
-
-# 3. train
-python src/a1-cv/train_run.py --model resnet18 --gpu 0 --epochs 40
-python src/a1-cv/train_run.py --model vit      --gpu 1 --epochs 60
-
-# 4. watch it
-python src/a1-cv/dashboard.py
-```
-
-`--smoke-test` runs a 30-second sanity check on a small subset and exits. **Always run it first.**
-`--resume` picks up from the last checkpoint (written every epoch).
-
----
-
-## 7. Engineering notes — things we measured that surprised us
-
-These cost us real time. They are written down so nobody repeats them.
-
-**The whole dataset lives in GPU memory.** 1.28M images at 32×32 uint8 is only **3.9 GB**, and the card
-has 96 GB. So we upload it once and generate batches *on the GPU* — augmentation is a dozen lines of
-tensor math. No DataLoader, no worker processes, no PIL, no per-batch host→device copies. This is only
-possible because the images are tiny (224×224 ImageNet would be ~190 GB).
-
-**`num_workers=0` on Windows is a myth that costs 3×.** The old "workers hang in Jupyter on Windows"
-rule is obsolete on PyTorch 2.x. On CIFAR, going 0 → 8 workers took an epoch from 14.2s to 4.7s. Also:
-`persistent_workers=True` is *mandatory*, or the DataLoader respawns every worker at each epoch boundary
-and eats the entire gain.
-
-**A GPU can be starved by a single CPU core.** Python/PIL augmentation runs ~4,000 img/s per core; the
-GPU trains at ~13,000 img/s. Before optimizing anything, find out **which side is waiting**. Low
-`nvidia-smi` utilization during training means you are CPU-bound.
-
-**`channels_last` is 3× SLOWER at 32×32.** The standard "free speedup for convnets" advice. It needs
-ImageNet-sized spatial dimensions to pay off; at CIFAR scale it is all overhead. Measure, don't copy.
-
-**Learning-rate scaling: `lr = 0.1 × batch/256`, not `/128`.** We used the CIFAR baseline (0.1 @ 128)
-and got lr=0.4 at batch 512 — double the correct value. ResNet-18 slowly diverged (accuracy *peaked at
-epoch 2* then fell) and **ResNet-50 went to `loss = NaN` on epoch 1**. A 2× LR error is not a tuning
-detail; it is the difference between training and not training. `train_loop.py` now aborts immediately on a
-NaN loss.
-
-**Deep ResNets at large batch need `zero_init_residual=True`.** ResNet-50 hit NaN at *both* lr 0.4 and
-lr 0.2. Initializing each residual block as an identity map (the standard Goyal et al. large-batch
-trick) fixed it.
-
-**On a GPU, a Python loop over samples is the enemy.** Our first `random_erasing_` looped over the ~25%
-of the batch being erased and dropped ViT throughput from 14.3k to 4.2k img/s. Rewriting it as a
-broadcast mask restored 15.3k. Same root cause as the point above about kernel launches.
-
-**Two jobs per GPU does NOT double throughput.** We tried it. The cards are power-limited (300/300 W);
-a second process just splits the same throughput and doubles everyone's wall-clock. **One job per GPU,
-two GPUs = two experiments in parallel** — that is what the second card is actually for. `DataParallel`
-across both cards measured **0.98×** at this model scale and is not worth it.
-
-**Augmented train accuracy is not comparable to clean test accuracy.** They are two different exams. With
-heavy augmentation the *training* number can even come out **below** the test number, which looks
-impossible. Do not read the train/val gap off the training printout — score the training set with the
-*test* transform if you want the real overfitting number. This trap bit us three separate times.
-
----
-
-## 8. Known issues / open questions
-
-- **We changed the CNN mid-experiment — this is a real methodology wart.** `zero_init_residual=True`
-  and gradient clipping were added to `make_resnet18` while fixing ResNet-50's NaN divergence, *after*
-  the original `resnet18` baseline had already run. So `resnet18` (41.54%) and its own controls
-  (`resnet18_60ep`, `resnet18_aug60`) were **not built from identical code**, which is exactly the sin
-  those controls existed to prevent. That may explain why `resnet18_60ep` (more training) came out
-  *worse* than the baseline — more training should not hurt. Two re-runs (`resnet18_v2` with the
-  current code, `resnet18_noclip` with clipping disabled) are measuring what that change cost. **The
-  ViT-vs-CNN conclusion does not depend on it** — the ViT beats the *best* CNN number under any
-  version of the code — but the CNN-vs-CNN rows should be treated as provisional.
-- **`resnet50` recovered.** It hit `loss = NaN` on epoch 1 at both lr 0.4 and lr 0.2;
-  `zero_init_residual=True` fixed it and it finished at 41.32%, on par with ResNet-18.
-- **Nothing here is converged.** Every run was still improving when its schedule ended. Longer
-  schedules would raise all of these numbers, and would likely help `vit_base` the most (86M params in
-  40 epochs is badly undertrained).
-- **One seed per config.** We have not measured run-to-run variance, so a ~1-point difference is
-  suggestive, not decisive. The ViT's 1.2-point margin deserves a repeat with a second seed.
-- We report accuracy on the official **50k validation split**. ImageNet's 100k "test" split has no
-  usable public labels.
-
-## 9. What to look at first
-
-- **`a1-cv/report_factory_performance.ipynb`** — the capstone: the whole journey from the coursework
-  loop to a fast, cross-platform, CNN-and-Transformer model factory, with the measured war-stories.
-- `a1-cv/cifar10_train.ipynb` — explains the whole pipeline, cites the CSED 502 NumPy code that each
-  PyTorch call replaces, and contains the CNN-vs-ViT comparison at small scale.
-- `a1-cv/imagenet_data.py` — the GPU-resident dataset. This is the most unusual thing we built.
-- `a1-cv/imagenet32_train.ipynb` — **the results.** Reads the per-epoch metrics off disk, prints the
-  scoreboard, plots the learning curves and the crossover. It does no training; re-run it any time.
-- `a1-cv/dashboard.py` — the live dashboard. Run it while training. Shows both GPUs and every run.
+- **`a1-cv/report_crossover.ipynb`** — the results as a runnable notebook: the crossover, the
+  accuracy-versus-cost tradeoff, and how to load any model.
+- **`a1-cv/report_factory_performance.ipynb`** — the engineering journey, from the coursework training
+  loop to this fast pipeline, with the measurements behind the notes above.
+- **`a1-cv/imagenet_data.py`** — the GPU-resident dataset, the most unusual piece of the code.
+- **`a1-cv/README.md`** — how to set up, load a model, and run the training.
