@@ -27,7 +27,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from imagenet_data import GpuImageNet32   # GpuCifar reuses its resident-batch + augmentation machinery
+# GpuCifar (defined below) subclasses GpuImageNet32, reusing its resident-batch and augmentation
+# machinery unchanged, so importing the base class is all CIFAR needs to add on top of it.
+from imagenet_data import GpuImageNet32
 
 
 def to_device_uint8(hf_split, device, img_key='img', label_key='fine_label'):
