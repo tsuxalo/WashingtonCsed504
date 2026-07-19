@@ -18,6 +18,10 @@ to.
 """
 from __future__ import annotations
 
+import os
+import urllib.request
+
+import torch
 import torch.nn as nn
 from torchvision import models
 from torchvision.models import VisionTransformer
@@ -144,3 +148,63 @@ def n_params(m: nn.Module) -> int:
     Count trainable parameters. The numbers quoted in BUILDERS come straight from here.
     """
     return sum(p.numel() for p in m.parameters() if p.requires_grad)
+
+
+# The trained weights live on a GitHub Release rather than in the repo, because they are hundreds of
+# megabytes. load_model fetches one on first use, caches it beside this module, and hands back a
+# ready-to-eval model, so a teammate can use any of our runs with no GPU and no hour of training.
+_RELEASE = 'https://github.com/TrueRottweiler/WashingtonCsed504/releases/download/models-v1'
+
+# What the caller asks for, and how to rebuild it: tag -> (builder name, num_classes). The file on the
+# Release is the tag with its slash turned into a dash, so 'imagenet32/vit' is 'imagenet32-vit.pt'.
+WEIGHTS = {
+    'imagenet32/resnet18': ('resnet18', 1000),
+    'imagenet32/resnet50': ('resnet50', 1000),
+    'imagenet32/vit':      ('vit', 1000),
+    'imagenet32/vit_base': ('vit_base', 1000),
+    'cifar10/resnet18':    ('resnet18', 10),
+}
+
+
+def _download(url: str, dst: str) -> None:
+    """Fetch url to dst, printing the percentage only as it advances so a slow download does not look
+    hung, and so it stays a single line rather than one message per received block."""
+    seen = [-1]
+    def hook(block, block_size, total):
+        if total > 0:
+            pct = min(100, block * block_size * 100 // total)
+            if pct != seen[0]:
+                seen[0] = pct
+                print(f'\r  downloading {os.path.basename(dst)}  {pct:3d}%', end='', flush=True)
+    urllib.request.urlretrieve(url, dst, reporthook=hook)
+    print()
+
+
+def load_model(tag: str, cache_dir: str | None = None) -> nn.Module:
+    """
+    Return one of our trained models, ready for eval, downloading its published weights on first use.
+
+        net = load_model('imagenet32/vit')      # no training, no GPU required
+
+    Inputs:
+     - tag: which model, one of WEIGHTS (for example 'imagenet32/vit' or 'cifar10/resnet18')
+     - cache_dir: where to keep the downloaded file (defaults to a weights/ folder beside this module)
+
+    Returns:
+     - the architecture with its trained weights loaded, in eval mode, on the CPU
+    """
+    if tag not in WEIGHTS:
+        raise ValueError(f'unknown tag {tag!r} (expected one of {list(WEIGHTS)})')
+    name, num_classes = WEIGHTS[tag]
+
+    cache_dir = cache_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weights')
+    os.makedirs(cache_dir, exist_ok=True)
+    asset = tag.replace('/', '-') + '.pt'
+    local = os.path.join(cache_dir, asset)
+    if not os.path.exists(local):
+        _download(f'{_RELEASE}/{asset}', local)
+
+    model = build(name, num_classes)
+    model.load_state_dict(torch.load(local, map_location='cpu'))
+    model.eval()
+    return model
