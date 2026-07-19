@@ -1,17 +1,27 @@
 """
-monitor.py -- a live dashboard for the ImageNet-32 training fleet.
+monitor.py -- one live screen for the whole ImageNet-32 training fleet.
 
-Four training processes each printing their own tqdm bar into their own log file is unreadable.
-This reads what they WRITE (runs/*.jsonl + the tqdm line at the tail of logs/*.log) plus nvidia-smi,
-and renders one screen that answers the only questions you actually have:
+Four training processes, each spraying its own tqdm bar into its own log file, is unreadable.
+So we don't watch the processes at all -- we read what they __write__ instead: runs/*.jsonl
+plus the tqdm line at the tail of logs/*.log.  Fold in a quick nvidia-smi, and draw one frame
+that answers the only questions you actually have while a run is cooking:
 
     Is everything still alive?   Is it learning?   Is the GPU busy?   When will it be done?
 
-It is READ-ONLY -- it never touches the training processes, so you can start and stop it freely,
-run several copies, or close it mid-run without affecting anything.
+It is READ-ONLY, and we lean on that hard: we only open files and shell out to nvidia-smi, we
+never touch the training processes.  So you can start us, stop us, run several copies, or close
+us mid-run -- and nothing downstream even notices.
 
-    python monitor.py                 # refresh every 2s until Ctrl+C
-    python monitor.py --once          # print one snapshot and exit
+Usage
+-----
+    python monitor.py                 # redraw every 2s until you hit Ctrl+C
+    python monitor.py --once          # print one snapshot and exit (nice for logs/screenshots)
+
+WHY read the files instead of the processes?
+--------------------------------------------
+The trainers already persist everything worth knowing -- finished-epoch metrics to JSONL, and
+live per-batch progress to the tqdm tail.  Tailing those is decoupled and crash-proof: if a
+trainer dies, its card simply stops updating; the dashboard never falls over with it.
 """
 from __future__ import annotations
 
@@ -30,9 +40,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-# A Windows console defaults to cp1252, which cannot encode a block character or a sparkline -- rich
-# then dies with UnicodeEncodeError halfway through drawing the frame.  Force the stream to UTF-8;
-# if that is refused (a genuinely legacy console), fall back to ASCII glyphs rather than crash.
+# WHAT: force our stdout to UTF-8, and remember in UNICODE whether we actually got it.
+# WHY:  a Windows console defaults to cp1252, which can't encode a block char or a sparkline --
+#       rich then dies with UnicodeEncodeError halfway through drawing a frame.
+# GOTCHA: reconfigure() is refused on a genuinely legacy console; if so we don't crash -- we flip
+#         UNICODE off and fall back to the ASCII glyphs chosen below.
 UNICODE = True
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -42,7 +54,8 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS, LOGS = os.path.join(HERE, 'runs'), os.path.join(HERE, 'logs')
 
-# Same palette as the notebook's scoreboard: colorblind-safe, and one hue per model.
+# Same palette as the notebook's scoreboard -- colorblind-safe, one hue per model so a given run
+# stays the same color everywhere you look.
 COLOR = {'resnet18': 'dark_orange3', 'resnet50': 'orange1',
          'vit': 'spring_green4', 'vit_base': 'medium_purple3'}
 SPARK = ' ▁▂▃▄▅▆▇█' if UNICODE else ' .:-=+*#%'
@@ -50,7 +63,11 @@ FULL, EMPTY = ('█', '░') if UNICODE else ('#', '.')
 
 
 def sparkline(vals, width=28) -> str:
-    """Unicode sparkline of the val-top1 curve -- the shape of learning, at a glance."""
+    """The val-top1 curve as a one-line Unicode sparkline -- the __shape__ of learning at a glance.
+
+    We keep the last `width` points and rescale [lo, hi] -> the 8 ramp glyphs.  A dead-flat curve
+    (hi == lo) would divide by zero, so we short-circuit it to the lowest non-blank glyph.
+    """
     if not vals:
         return ''
     v = vals[-width:]
@@ -71,26 +88,27 @@ def read_jsonl(tag):
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError:
-                pass          # a partially-flushed final line: ignore it, it'll be there next tick
+                pass          # half-written final line, skip it -- it'll be complete on the next tick
     return out
 
 
 def read_progress(tag):
     """Scrape the CURRENT epoch's progress out of the live tqdm bar at the tail of the log.
 
-    The JSONL only gains a row when an epoch FINISHES, so without this the dashboard would look
-    frozen for a whole minute at a time.
+    WHY, when we already parse the JSONL?  Because JSONL only gains a row when an epoch
+    __finishes__ -- so between rows (a whole minute at a time) the dashboard would sit frozen.  The
+    in-flight batch count lives only in the tqdm tail, so that's where we go to get it.
     """
     p = os.path.join(LOGS, f'{tag}.log')
     if not os.path.exists(p):
         return None
-    with open(p, 'rb') as f:                       # tqdm rewrites its line with \r, so read raw
+    with open(p, 'rb') as f:                       # tqdm overwrites its line with \r (no newline), so we read raw bytes
         f.seek(0, 2)
         f.seek(max(0, f.tell() - 4000))
         tail = f.read().decode('utf-8', 'replace')
     frames = tail.replace('\r', '\n').split('\n')
     for line in reversed(frames):
-        m = re.search(r'(\d+)/(\d+)\s*\[', line)   # e.g. "1531/2503 ["
+        m = re.search(r'(\d+)/(\d+)\s*\[', line)   # capture "<cur>/<tot> [" -> e.g. "1531/2503 ["
         if m:
             cur, tot = int(m.group(1)), int(m.group(2))
             ips = re.search(r'([\d.]+)k img/s', line)
@@ -117,7 +135,12 @@ def gpus():
 
 
 def live_tags():
-    """Which models have a train.py process actually running right now?"""
+    """Which models have a train.py process actually running __right now__?
+
+    We ask Windows for every python.exe whose command line mentions train.py, then pull the
+    --model value out of each -> a set of live tags.  That's what tells a DONE card from a STOPPED
+    one, and lets a card exist before its first JSONL row is written.
+    """
     try:
         out = subprocess.run(
             ['powershell', '-NoProfile', '-Command',
@@ -135,11 +158,13 @@ def bar(frac, width=18, color='white'):
 
 
 def render(t0):
-    """Vertical, one CARD per model.
+    """Build the frame: a hardware panel on top, then one CARD per model stacked vertically.
 
-    The first version was one wide table -- which needed ~135 columns and truncated every column to
-    'val to...' / 'traini...' in a normal terminal.  A dashboard you cannot read is worse than no
-    dashboard.  Stacked multi-line cards fit ~90 columns and never truncate.
+    WHY stacked cards, not one wide table?
+    --------------------------------------
+    The first cut was a single wide table -- and it needed ~135 columns, so in a normal terminal
+    every column truncated to 'val to...' / 'traini...'.  A dashboard you can't read is worse than
+    no dashboard.  Stacked multi-line cards fit in ~90 columns and never truncate.
     """
     alive = live_tags()
     tags = sorted({os.path.basename(p).split('.')[0] for p in glob.glob(os.path.join(RUNS, '*.jsonl'))}
@@ -147,7 +172,8 @@ def render(t0):
 
     blocks = []
 
-    # ---- hardware ----
+    # Step 1: the hardware panel -- one row per GPU (util bar / mem / power / temp), color-coded so
+    # a busy card reads green, a coasting one yellow, an idle or overheating one red.
     g = Table.grid(padding=(0, 2))
     for d in gpus():
         us = 'bold green' if d['util'] > 85 else ('yellow' if d['util'] > 40 else 'red')
@@ -159,6 +185,8 @@ def render(t0):
                   Text(f"{d['temp']:.0f}C", style=hot))
     blocks.append(Panel(g, title='[bold]hardware', border_style='grey37', padding=(0, 1)))
 
+    # Step 2: one card per model.  For every tag we know about -- has a JSONL on disk, or is live in
+    # `alive` -- we build a self-contained multi-line card and stack it under the hardware panel.
     for tag in tags:
         rows = read_jsonl(tag)
         prog = read_progress(tag)
@@ -166,11 +194,15 @@ def render(t0):
         running = tag in alive
         total = _total_epochs(tag)
 
+        # Part A: nothing logged yet -> the run just started, so drop a 'starting...' stub and skip
+        # the rest; there are no metrics to draw for it this frame.
         if not rows:
             blocks.append(Panel(Text('starting...', style='yellow'),
                                 title=f'[bold {col}]{tag}', border_style='grey37', padding=(0, 1)))
             continue
 
+        # Part B: read the latest FINISHED epoch off rows[-1] -- current top-1, best top-1 and the
+        # epoch it peaked at, and the train-minus-val gap we'll grade down in Part D.
         last = rows[-1]
         top1s = [r['val']['top1'] for r in rows]
         best = max(top1s)
@@ -179,6 +211,9 @@ def render(t0):
         tr1, va1 = last['train']['top1'], last['val']['top1']
         gap = tr1 - va1
 
+        # Part C: the run's headline state.  Not alive -> DONE if it hit its epoch budget, else
+        # STOPPED (red).  Still alive but top-1 slid >0.02 below a couple epochs ago -> REGRESSING;
+        # otherwise it's just training.
         if not running:
             state = Text('DONE', style='bold green') if ep >= total else Text('STOPPED', style='bold red')
         elif len(top1s) >= 3 and top1s[-1] < top1s[-3] - 0.02:
@@ -186,10 +221,11 @@ def render(t0):
         else:
             state = Text('training', style='green')
 
-        # The overfitting verdict -- but ONLY when it is a valid comparison.  Under mixup/CutMix the
-        # train accuracy is computed on blended images against the dominant label, so it is a
-        # different (harder) exam than clean validation and the gap is not interpretable; it can even
-        # go negative.  Judging it anyway is exactly the mistake we made reading the CIFAR curves.
+        # Part D: the overfitting verdict -- but ONLY when train-vs-val is a fair comparison.
+        # Under mixup/CutMix the train accuracy is scored on blended images against the dominant
+        # label, so it's a different (harder) exam than clean validation -- the gap is not
+        # interpretable and can even go __negative__.  Judging it anyway is exactly the mistake we
+        # made reading the CIFAR curves, so we print 'gap n/a (mixup)' and leave it ungraded.
         aug = _strong_aug(tag)
         if aug:
             health = Text('gap n/a (mixup)', style='dim')
@@ -200,12 +236,17 @@ def render(t0):
         else:
             health = Text(f'gap {gap:+.0%} healthy', style='green')
 
+        # Part E: progress + ETA.  frac blends finished epochs with the live tqdm fraction of the
+        # current one; per-epoch time is the median of the last 5 (+4s slack) -> a steady ETA that
+        # doesn't lurch when one epoch happens to run long.
         frac = (ep + (prog['frac'] if prog else 0)) / max(1, total)
         ips = (prog or {}).get('img_s') or last['train']['img_s']
         recent = [r['train']['sec'] for r in rows[-5:]]
         per_ep = sorted(recent)[len(recent) // 2] + 4
         eta = _fmt((total - ep) * per_ep) if running else '-'
 
+        # Part F: assemble the card -- row 1 is the progress bar + state + throughput + ETA, row 2
+        # the val/best/train numbers + health verdict, row 3 the full-history top-1 sparkline.
         t = Table.grid(padding=(0, 1))
         t.add_row(bar(frac, 30, col),
                   Text(f'{ep}/{total}', style='bold'),
@@ -225,10 +266,14 @@ def render(t0):
 
 
 def _strong_aug(tag):
-    """Did this run use mixup/CutMix?  If so its TRAIN accuracy is measured on blended images and is
-    NOT comparable to clean validation accuracy -- the train/val 'gap' becomes meaningless (it even
-    goes negative).  Same trap as the CIFAR notebook: augmented-train vs clean-test are two different
-    exams.  So we label it instead of pretending to judge it."""
+    """Did this run use mixup/CutMix?  We scan the log for the 'strong aug' line to find out.
+
+    CAVEAT: it matters because under mixup/CutMix the TRAIN accuracy is scored on blended images
+    against the dominant label -- a different, harder exam than clean validation.  So the train/val
+    'gap' stops meaning anything (it can even go __negative__).  Same trap the CIFAR notebook set
+    for us: augmented-train vs clean-test are two different exams.  So when this is True we
+    __label__ the run instead of pretending to judge its gap.
+    """
     p = os.path.join(LOGS, f'{tag}.log')
     try:
         with open(p, errors='replace') as f:
@@ -241,10 +286,14 @@ def _strong_aug(tag):
 
 
 def _total_epochs(tag):
-    """Read the real epoch count from the run's own log header instead of hardcoding it.
+    """Read the real epoch count from the run's OWN log header instead of hardcoding it.
 
-    The hardcoded table said vit_base ran 60 epochs when it actually ran 40, so a COMPLETED run was
-    displayed as 'STOPPED' in red.  Never hardcode what the process already tells you.
+    WHY not just hardcode it?
+    -------------------------
+    Because we did, and it bit us: the hardcoded table claimed vit_base ran 60 epochs when it
+    actually ran 40, so a COMPLETED run got drawn as 'STOPPED' in red.  Never hardcode what the
+    process already prints for you -- we parse "<N> epochs, batch" out of the header, else fall
+    back to 40.
     """
     p = os.path.join(LOGS, f'{tag}.log')
     try:
