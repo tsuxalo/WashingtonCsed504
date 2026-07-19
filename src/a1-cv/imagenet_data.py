@@ -122,7 +122,9 @@ class GpuImageNet32:
         GPU instead of per-image on the CPU. Doing it per batch, not once up front, is precisely what
         lets us keep the resident dataset as uint8 in the first place.
         """
-        # Reorder NHWC to NCHW and scale into [0, 1].
+        # Reorder NHWC to NCHW, the layout torch's conv and norm layers expect, and rescale the raw
+        # 0-255 bytes into [0, 1] so the per-channel mean/std below act on the same scale they were
+        # measured in (imagenet_prepare.py computed them from pixels divided by 255).
         #
         # xb (before): (B, 32, 32, 3) NHWC uint8
         # xb (after):  (B, 3, 32, 32) NCHW float in [0, 1]

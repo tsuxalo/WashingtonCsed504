@@ -1,36 +1,34 @@
 """
 imagenet_prepare.py -- one-time conversion of ImageNet-1k-32x32 from parquet/JPEG to raw uint8 arrays.
 
-WHY THIS EXISTS
----------------
+Why this exists.
 The HuggingFace dataset (benjamin-paine/imagenet-1k-32x32) stores each image as a JPEG blob inside
-a parquet file.  That is a fine way to *ship* 1.28M images (596 MB on disk), but it is a terrible way
-to *train* on them: a naive DataLoader would decode 1,281,167 JPEGs on the CPU **every epoch**.
+a parquet file. That is a fine way to ship 1.28M images (596 MB on disk), but a terrible way to
+train on them: a naive DataLoader would decode 1,281,167 JPEGs on the CPU every epoch.
 
-We already measured, on CIFAR-10, that plain crop+flip augmentation in Python was starving the GPU by
-3x -- and that was with NO image decoding at all.  Add a JPEG decode per image per epoch on a dataset
-25x larger and the GPU would spend nearly all its time idle.
+We already measured, on CIFAR-10, that plain crop+flip augmentation in Python was starving the GPU
+by 3x -- and that was with no image decoding at all. Add a JPEG decode per image per epoch on a
+dataset 25x larger and the GPU would spend nearly all its time idle.
 
-So we decode ONCE, here, into a flat uint8 array:
+So we decode once, here, into a flat uint8 array:
 
     1,281,167 x 32 x 32 x 3 bytes = 3.9 GB
 
-which fits comfortably in RAM (and even in GPU memory).  After this runs, training never touches
-JPEG, PIL, or parquet again -- it just indexes into an array.  This single step is what makes the
+which fits comfortably in RAM (and even in GPU memory). After this runs, training never touches
+JPEG, PIL, or parquet again -- it just indexes into an array. This single step is what makes the
 project tractable; it is not an optimization we are doing for fun.
 
-USAGE
------
+Usage:
     python imagenet_prepare.py                      # uses the defaults below
     python imagenet_prepare.py --force              # re-do it even if outputs exist
     python imagenet_prepare.py --workers 16         # override the process count
 
-OUTPUT (into --out-dir, gitignored -- 4 GB does not belong in git)
+Output (into --out-dir, gitignored -- 4 GB does not belong in git):
     train_x.npy   uint8  (1281167, 32, 32, 3)      3.9 GB
     train_y.npy   int16  (1281167,)
     val_x.npy     uint8  (50000, 32, 32, 3)
     val_y.npy     int16  (50000,)
-    stats.json    per-channel mean/std computed FROM THIS DATA, plus row counts
+    stats.json    per-channel mean/std computed from this data, plus row counts
 """
 from __future__ import annotations
 
@@ -57,13 +55,19 @@ N_CLASSES = 1000
 
 
 def _decode(payload: bytes) -> np.ndarray:
-    """JPEG bytes -> (32, 32, 3) uint8.  Module-level so Windows 'spawn' workers can pickle it."""
+    """Decode one JPEG blob into a (32, 32, 3) uint8 array. Module-level so Windows 'spawn' workers can pickle it."""
+
+    # A handful of ImageNet images are greyscale or CMYK, so force everything to RGB and keep the
+    # decoded arrays a uniform three-channel shape.
     im = Image.open(io.BytesIO(payload))
-    if im.mode != 'RGB':                 # a handful of ImageNet images are greyscale or CMYK
+    if im.mode != 'RGB':
         im = im.convert('RGB')
+
+    # This should never fire, but a silent shape bug here would be very painful to find later, so we
+    # check the decoded shape against IMG_SHAPE rather than trusting it.
     a = np.asarray(im, dtype=np.uint8)
-    if a.shape != IMG_SHAPE:             # should never fire, but a silent shape bug here would be
-        raise ValueError(f'expected {IMG_SHAPE}, got {a.shape}')   # very painful to find later
+    if a.shape != IMG_SHAPE:
+        raise ValueError(f'expected {IMG_SHAPE}, got {a.shape}')
     return a
 
 
@@ -71,7 +75,7 @@ def convert_split(files: list[str], x_path: str, y_path: str, workers: int,
                   batch_rows: int = 16_384) -> tuple[np.ndarray, np.ndarray]:
     """Decode every row of `files` into memmapped .npy arrays.  Returns (x, y) as memmaps."""
     n_total = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
-    print(f'  {len(files)} parquet file(s), {n_total:,} rows -> {x_path}')
+    print(f'  {len(files)} parquet file(s), {n_total:,} rows to {x_path}')
 
     # open_memmap writes straight to disk, so we never hold 3.9 GB in RAM at once.
     x = np.lib.format.open_memmap(x_path, mode='w+', dtype=np.uint8, shape=(n_total, *IMG_SHAPE))
@@ -104,8 +108,8 @@ def convert_split(files: list[str], x_path: str, y_path: str, workers: int,
 def channel_stats(x: np.ndarray, sample: int = 200_000, seed: int = 0) -> tuple[list, list]:
     """Per-channel mean/std in [0,1], from a random sample (exact to ~4 decimals, and 6x faster).
 
-    Sampled RANDOMLY, not sequentially: this dataset is sorted by class, so the first N rows are
-    only the first few classes and their color statistics are NOT representative.
+    Sampled randomly, not sequentially: this dataset is sorted by class, so the first N rows are
+    only the first few classes and their color statistics are not representative.
     """
     rng = np.random.default_rng(seed)
     idx = np.sort(rng.choice(len(x), size=min(sample, len(x)), replace=False))
@@ -157,7 +161,7 @@ def main() -> int:
     if len(train_y) != 1_281_167:
         problems.append(f'train rows = {len(train_y):,}, expected 1,281,167')
     if (counts == 0).any():
-        problems.append(f'{int((counts == 0).sum())} classes have ZERO training images')
+        problems.append(f'{int((counts == 0).sum())} classes have zero training images')
     if int(train_y.min()) != 0 or int(train_y.max()) != N_CLASSES - 1:
         problems.append(f'labels span [{train_y.min()}, {train_y.max()}], expected [0, 999]')
 
@@ -167,17 +171,17 @@ def main() -> int:
     print(f'  images per class  : min {counts.min()}, max {counts.max()}, mean {counts.mean():.0f}'
           f'   (the reference paper reports 732-1300)')
 
-    # The data is stored SORTED BY CLASS -- worth proving, because a sequential subset would then
+    # The data is stored sorted by class -- worth proving, because a sequential subset would then
     # contain only a handful of classes and quietly ruin any experiment built on it.
     first_10k = np.asarray(train_y[:10_000])
     print(f'  first 10k labels  : {len(np.unique(first_10k))} distinct class(es) '
-          f'-> the file IS sorted by class; ALWAYS shuffle, and never take a sequential subset')
+          f'so the file is sorted by class; always shuffle, and never take a sequential subset')
 
-    print('\nComputing per-channel statistics from a random sample of the TRAINING data...')
+    print('\nComputing per-channel statistics from a random sample of the training data...')
     mean, std = channel_stats(train_x)
     print(f'  ImageNet-32 mean : {tuple(mean)}')
     print(f'  ImageNet-32 std  : {tuple(std)}')
-    print(f'  (CIFAR-10 was    : (0.4914, 0.4822, 0.4465) / (0.247, 0.2435, 0.2616)  -- do NOT reuse)')
+    print(f'  (CIFAR-10 was    : (0.4914, 0.4822, 0.4465) / (0.247, 0.2435, 0.2616)  -- do not reuse)')
 
     json.dump({'mean': mean, 'std': std,
                'n_train': int(len(train_y)), 'n_val': int(len(val_y)),
@@ -198,5 +202,7 @@ def main() -> int:
     return 0
 
 
-if __name__ == '__main__':          # required: Windows 'spawn' re-imports this module in every worker
+# Windows 'spawn' re-imports this module in every worker, so the real work has to sit behind this
+# guard -- without it each worker would re-run main() on import.
+if __name__ == '__main__':
     sys.exit(main())
