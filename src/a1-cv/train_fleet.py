@@ -118,9 +118,12 @@ def launch(spec, gpu, args):
     cmd = [PY, '-u', '-W', 'ignore', os.path.join(HERE, 'train_run.py'),
            '--dataset', dataset, '--model', model, '--gpu', str(gpu), '--epochs', str(epochs)]
     if args.smoke:
-        cmd.append('--smoke-test')                 # Tiny subset, 2 epochs, then it exits: a wiring check.
+        # A tiny subset, 2 epochs, then it exits: a wiring check before we spend real time.
+        cmd.append('--smoke-test')
+
     if args.data_parallel:
-        cmd.append('--data-parallel')              # Only used by the single-job DataParallel demo below.
+        # Only used by the single-job DataParallel demo below, never by the fleet path.
+        cmd.append('--data-parallel')
 
     # Step 2: Send this run's console output to logs/<base>.log. There are two reasons for this.
     #
@@ -136,10 +139,11 @@ def launch(spec, gpu, args):
     # On Windows, CREATE_NO_WINDOW stops a console window from popping up for each child.
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=HERE, creationflags=flags)
+
     # We flush every status line. An hours-long run is usually redirected to a file, and a buffered
     # print would leave that file empty for minutes, so you would have no idea the fleet was alive.
     label = 'SMOKE' if args.smoke else f'{epochs}ep'
-    print(f'  [gpu {gpu}] start  {base:18s} {label:>6s}  (pid {proc.pid})  -> logs/{base}.log', flush=True)
+    print(f'  [gpu {gpu}] start  {base:18s} {label:>6s}  (pid {proc.pid})  logging to logs/{base}.log', flush=True)
     return {'base': base, 'gpu': gpu, 'proc': proc, 'log': log, 't0': time.time()}
 
 
@@ -164,8 +168,8 @@ def run_fleet(args):
         if queue:
             slots[g] = launch(queue.pop(0), g, args)
 
-    print('\n  -> both cards are now training. Watch:  python dashboard.py   (and Task Manager: '
-          'set a GPU graph to "Compute_0"/"Cuda" for BOTH cards)\n')
+    print('\n  both cards are now training. Watch:  python dashboard.py   (and Task Manager: '
+          'set a GPU graph to "Compute_0"/"Cuda" for both cards)\n')
 
     # Step 2: The supervision loop. Poll each card about once a second, and when a run finishes,
     # start the next queued model on the same card. This is what keeps utilization pinned instead of
@@ -177,22 +181,28 @@ def run_fleet(args):
                 job = slots[g]
                 if job is None:
                     continue
-                ret = job['proc'].poll()           # None means still running; an int means it exited.
+
+                # poll() returns None while the run is still going; an int is its exit code.
+                ret = job['proc'].poll()
                 if ret is None:
                     continue
 
                 # This card just freed up.
                 job['log'].close()
                 dt = time.time() - job['t0']
-                ok = 'done ' if ret == 0 else f'FAILED({ret})'   # A nonzero exit is a crash; check the log.
+
+                # A nonzero exit code is a crash, not a clean finish, so the log is where to look.
+                ok = 'done ' if ret == 0 else f'FAILED({ret})'
                 print(f'  [gpu {g}] {ok} {job["base"]:18s}  in {dt/60:.1f} min', flush=True)
                 slots[g] = launch(queue.pop(0), g, args) if queue else None
-            time.sleep(1.0)                          # Poll cadence: cheap, and 1s is plenty for hour-long runs.
+
+            # Poll cadence: cheap, and once a second is plenty for hour-long runs.
+            time.sleep(1.0)
     except KeyboardInterrupt:
         # Step 3: Ctrl+C tears the whole fleet down cleanly. Without this, killing the scheduler would
         # orphan the training processes: they would keep both cards pinned with no easy way to see or
         # stop them short of Task Manager.
-        print('\nCtrl+C -> stopping all runs...')
+        print('\nCtrl+C received, stopping all runs...')
         for job in slots:
             if job:
                 job['proc'].terminate()
@@ -213,9 +223,11 @@ def run_data_parallel_demo(args):
     """
     spec = resolve_queue(args)[0]
     dataset, model, _ = spec
-    print(f'\nDataParallel demo: ONE {model} ({dataset}) split across cards 0 and 1.')
+    print(f'\nDataParallel demo: one {model} ({dataset}) split across cards 0 and 1.')
     print('Note: measured ~1.0x on these 32x32 models -- the point is to see why, not to go faster.\n')
-    job = launch(spec, 0, args)                     # --data-parallel makes train_run.py use both cards itself.
+
+    # --data-parallel makes train_run.py drive both cards itself, so we launch it on card 0 only.
+    job = launch(spec, 0, args)
     try:
         job['proc'].wait()
     except KeyboardInterrupt:
@@ -239,7 +251,7 @@ def main():
     p.add_argument('--smoke', action='store_true',
                    help='run each job as a quick --smoke-test to prove the wiring, then exit')
     p.add_argument('--data-parallel', action='store_true',
-                   help='instead of a fleet, run ONE model split across both cards (the honest ~1x demo)')
+                   help='instead of a fleet, run one model split across both cards (the honest ~1x demo)')
     args = p.parse_args()
 
     if not args.queue and not args.models:
