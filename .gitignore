@@ -223,12 +223,11 @@ __marimo__/
 .claude/settings.local.json
 .claude/settings.json
 
-# Notebooks
-src/a1-cv/data/*
+# a1-cv: datasets, run outputs, logs, and checkpoints (all regenerable)
+src/a1-cv/data/
+src/a1-cv/runs/
+src/a1-cv/logs/
 src/a1-cv/cifar10_resnet18.pt
 
-# ImageNet-32 prepared arrays -- 4.1 GB, regenerate with:
-#   python src/a1-imagenet32/prepare_data.py
-src/a1-imagenet32/archive/
-src/a1-imagenet32/data/
-src/a1-imagenet32/runs/
+# ImageNet-32 prepared arrays live under data/imagenet32 -- 3.9 GB, regenerate with:
+#   python src/a1-cv/imagenet_prepare.py

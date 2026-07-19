@@ -43,4 +43,4 @@ estimation needs measurement, not spec sheets.
 - **Never scale by raw TFLOPS ratio**: evaluate the full roofline `max()` on the target; if the
   binding term changes, calibrate there instead of transferring.
 - **The calibration step must mirror the training recipe** (same dtype/flags/augmentation) — it
-  currently copies `../a1-cv/cifar100_hf_train.ipynb` section 4. Change one, change both.
+  currently copies `../cifar100_train.ipynb` section 4. Change one, change both.
