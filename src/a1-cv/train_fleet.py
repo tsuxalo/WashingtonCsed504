@@ -11,10 +11,11 @@ means two runs in flight at all times, until the queue drains. Each run is just 
 next" part.
 
 Usage:
-    python train_fleet.py                         # the capstone queue on both cards (this is the 8-hour run)
-    python train_fleet.py --smoke                 # same wiring, but --smoke-test each job (~30s) to prove it
-    python train_fleet.py --models resnet18 vit   # a custom queue
-    python train_fleet.py --epochs 40             # override the schedule length
+    python train_fleet.py                              # the ImageNet-32 capstone on both cards (the long run)
+    python train_fleet.py --queue retrain              # the CIFAR retraining (the ViT/clip fixes), ~30 min
+    python train_fleet.py --smoke                      # same wiring, but --smoke-test each job (~30s) to prove it
+    python train_fleet.py --queue retrain --smoke      # prove the CIFAR wiring in ~1 min
+    python train_fleet.py --dataset cifar100 --models resnet18 vit --epochs 40   # a custom queue
     python train_fleet.py --data-parallel --models vit_base   # one model split across both cards (see below)
 
 Watch it from two other terminals:
@@ -55,44 +56,74 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 LOGS = os.path.join(HERE, 'logs')
 
-# The capstone queue. ResNet-18 and the ViT are the head-to-head crossover pair; resnet50 and
-# vit_base are the capacity controls, so a win cannot be dismissed as "the bigger model just had
-# more parameters". The order starts the two families first, so one lands on each card and the
-# dashboard immediately shows a CNN and a Transformer training side by side.
-DEFAULT_QUEUE = ['resnet18', 'vit', 'resnet50', 'vit_base']
+# The named queues. Each entry is (dataset, model, epochs); epochs=None means "use --epochs".
+#
+# capstone: the ImageNet-32 study. ResNet-18 and the ViT are the head-to-head crossover pair;
+#   resnet50 and vit_base are the capacity controls, so a win cannot be dismissed as "the bigger
+#   model just had more parameters". Starting the two families first lands one on each card, so the
+#   dashboard immediately shows a CNN and a Transformer training side by side.
+# retrain: the minimal CIFAR retraining. The two ViTs get the long schedule they actually need (they
+#   were the under-scheduled ones); the ResNets converge fast. Both ViTs lead the queue, so one lands
+#   on each card and the quick ResNets slot in behind them.
+QUEUES = {
+    'capstone': [('imagenet32', 'resnet18', None), ('imagenet32', 'vit', None),
+                 ('imagenet32', 'resnet50', None), ('imagenet32', 'vit_base', None)],
+    'retrain':  [('cifar100', 'vit', 200), ('cifar10', 'vit', 200),
+                 ('cifar100', 'resnet18', 40), ('cifar10', 'resnet18', 30)],
+}
 
 
-def launch(model, gpu, args):
+def tag_base(dataset, model):
+    """The run's name stem, matching train_run.py: the bare model on ImageNet-32, dataset-prefixed on CIFAR."""
+    return model if dataset == 'imagenet32' else f'{dataset}_{model}'
+
+
+def resolve_queue(args):
+    """Turn the CLI options into the list of (dataset, model, epochs) specs to run.
+
+    A custom --models list wins, spread over the single --dataset at --epochs; otherwise we use the
+    named preset from --queue, whose specs carry their own per-model epochs.
+    """
+    if args.models:
+        return [(args.dataset, m, None) for m in args.models]
+    return list(QUEUES[args.queue])
+
+
+def launch(spec, gpu, args):
     """
     Start one train_run.py run on one card and return a live handle we can poll later.
 
     Inputs:
-     - model: the model name to train (e.g. 'resnet18')
+     - spec: a (dataset, model, epochs) tuple; epochs=None falls back to args.epochs
      - gpu: which CUDA card to pin this run to
      - args: the parsed command-line options (epochs, smoke, data_parallel)
 
     Returns:
      - a dict with the Popen process, the open log file, and some bookkeeping
     """
-    # Step 1: Build the command. It is the trainer we already have, pinned to this card.
+    dataset, model, epochs = spec
+    epochs = args.epochs if epochs is None else epochs
+    base = tag_base(dataset, model)
+
+    # Step 1: Build the command. It is the trainer we already have, pinned to this card and dataset.
     #
     # The -u flag makes the child's stdout unbuffered, so the dashboard sees each tqdm line
     # immediately instead of in 4 KB gulps. Buffered child output is the classic "why is my log
     # empty?" bug.
     cmd = [PY, '-u', '-W', 'ignore', os.path.join(HERE, 'train_run.py'),
-           '--model', model, '--gpu', str(gpu), '--epochs', str(args.epochs)]
+           '--dataset', dataset, '--model', model, '--gpu', str(gpu), '--epochs', str(epochs)]
     if args.smoke:
         cmd.append('--smoke-test')                 # Tiny subset, 2 epochs, then it exits: a wiring check.
     if args.data_parallel:
         cmd.append('--data-parallel')              # Only used by the single-job DataParallel demo below.
 
-    # Step 2: Send this run's console output to logs/<model>.log. There are two reasons for this.
+    # Step 2: Send this run's console output to logs/<base>.log. There are two reasons for this.
     #
     # First, dashboard.py scrapes the current epoch's tqdm bar from the tail of this file, because the
     # JSONL only updates once per finished epoch; without the log the dashboard looks frozen for
-    # minutes. Second, an 8-hour run's output has to survive us closing this terminal.
+    # minutes. Second, an hours-long run's output has to survive us closing this terminal.
     os.makedirs(LOGS, exist_ok=True)
-    log = open(os.path.join(LOGS, f'{model}.log'), 'w', encoding='utf-8')
+    log = open(os.path.join(LOGS, f'{base}.log'), 'w', encoding='utf-8')
 
     # Step 3: Spawn it. Popen returns immediately, which is the whole point: we launch on both cards
     # and then supervise, rather than waiting for one to finish first.
@@ -100,10 +131,11 @@ def launch(model, gpu, args):
     # On Windows, CREATE_NO_WINDOW stops a console window from popping up for each child.
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=HERE, creationflags=flags)
-    # We flush every status line. An 8-hour run is usually redirected to a file, and a buffered print
-    # would leave that file empty for minutes, so you would have no idea the fleet was alive.
-    print(f'  [gpu {gpu}] start  {model:9s}  (pid {proc.pid})  -> logs/{model}.log', flush=True)
-    return {'model': model, 'gpu': gpu, 'proc': proc, 'log': log, 't0': time.time()}
+    # We flush every status line. An hours-long run is usually redirected to a file, and a buffered
+    # print would leave that file empty for minutes, so you would have no idea the fleet was alive.
+    label = 'SMOKE' if args.smoke else f'{epochs}ep'
+    print(f'  [gpu {gpu}] start  {base:18s} {label:>6s}  (pid {proc.pid})  -> logs/{base}.log', flush=True)
+    return {'base': base, 'gpu': gpu, 'proc': proc, 'log': log, 't0': time.time()}
 
 
 def run_fleet(args):
@@ -111,11 +143,12 @@ def run_fleet(args):
     The scheduler: keep every card busy until the queue is empty.
 
     Inputs:
-     - args: the parsed command-line options (models, n_gpu, epochs, smoke)
+     - args: the parsed command-line options (queue/models, n_gpu, epochs, smoke)
     """
-    queue = list(args.models)
-    print(f'\nFleet: {len(queue)} runs {queue} across {args.n_gpu} cards '
-          f'({"SMOKE" if args.smoke else str(args.epochs) + " epochs"} each)\n')
+    queue = resolve_queue(args)
+    names = [tag_base(d, m) for d, m, _ in queue]
+    print(f'\nFleet: {len(queue)} runs {names} across {args.n_gpu} cards'
+          f'{" (SMOKE)" if args.smoke else ""}\n')
 
     # slots is a list of length n_gpu. slots[g] is the run currently on card g, or None if that card
     # is idle.
@@ -147,7 +180,7 @@ def run_fleet(args):
                 job['log'].close()
                 dt = time.time() - job['t0']
                 ok = 'done ' if ret == 0 else f'FAILED({ret})'   # A nonzero exit is a crash; check the log.
-                print(f'  [gpu {g}] {ok} {job["model"]:9s}  in {dt/60:.1f} min', flush=True)
+                print(f'  [gpu {g}] {ok} {job["base"]:18s}  in {dt/60:.1f} min', flush=True)
                 slots[g] = launch(queue.pop(0), g, args) if queue else None
             time.sleep(1.0)                          # Poll cadence: cheap, and 1s is plenty for hour-long runs.
     except KeyboardInterrupt:
@@ -171,12 +204,13 @@ def run_data_parallel_demo(args):
     card (the fleet, or the notebook's DataParallel section) to see the roughly 1.0x for yourself.
 
     Inputs:
-     - args: the parsed command-line options; args.models[0] is the model to split
+     - args: the parsed command-line options; the first spec of the resolved queue is the model to split
     """
-    model = args.models[0]
-    print(f'\nDataParallel demo: ONE {model} split across cards 0 and 1.')
+    spec = resolve_queue(args)[0]
+    dataset, model, _ = spec
+    print(f'\nDataParallel demo: ONE {model} ({dataset}) split across cards 0 and 1.')
     print('CAVEAT: measured ~1.0x on these 32x32 models -- the point is to SEE why, not to go faster.\n')
-    job = launch(model, 0, args)                    # --data-parallel makes train_run.py use both cards itself.
+    job = launch(spec, 0, args)                     # --data-parallel makes train_run.py use both cards itself.
     try:
         job['proc'].wait()
     except KeyboardInterrupt:
@@ -186,8 +220,13 @@ def run_data_parallel_demo(args):
 
 def main():
     p = argparse.ArgumentParser(description='Fill both GPUs with training runs (the model-factory way).')
-    p.add_argument('--models', nargs='+', default=DEFAULT_QUEUE, help='the queue of models to train')
-    p.add_argument('--epochs', type=int, default=40, help='epochs per run (ignored under --smoke)')
+    p.add_argument('--queue', choices=list(QUEUES), default='capstone',
+                   help='a named preset queue: capstone (ImageNet-32) or retrain (the CIFAR fixes)')
+    p.add_argument('--models', nargs='+', default=None,
+                   help='a custom queue of models instead of a preset (uniform --dataset and --epochs)')
+    p.add_argument('--dataset', default='imagenet32',
+                   help='dataset for --models (a named --queue carries its own datasets)')
+    p.add_argument('--epochs', type=int, default=40, help='epochs per run when a spec does not set one')
     p.add_argument('--n-gpu', type=int, default=2, help='cards to spread across')
     p.add_argument('--smoke', action='store_true', help='--smoke-test each job: prove the wiring in ~30s')
     p.add_argument('--data-parallel', action='store_true',

@@ -136,11 +136,15 @@ def gpus():
 
 
 def live_tags():
-    """Which models have a train_run.py process actually running right now?
+    """Which runs have a train_run.py process actually running right now?
 
-    We ask Windows for every python.exe whose command line mentions train_run.py, then pull the
-    --model value out of each into a set of live tags. That's what tells a 'DONE' card from a
-    'STOPPED' one, and lets a card exist before its first JSONL row is written.
+    We ask Windows for every python.exe whose command line mentions train_run.py, then rebuild each
+    run's tag from its --dataset and --model exactly the way train_run.py does: the bare model name on
+    ImageNet-32, dataset-prefixed on CIFAR. That's what tells a 'DONE' card from a 'STOPPED' one, and
+    lets a card exist before its first JSONL row is written.
+
+    We must rebuild the whole tag, not just read --model. Matching on --model alone drew a live
+    cifar100_vit as STOPPED, because its process says '--model vit' while its tag is 'cifar100_vit'.
     """
     try:
         out = subprocess.run(
@@ -148,7 +152,16 @@ def live_tags():
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Where-Object { $_.CommandLine -match 'train_run.py' } | ForEach-Object { $_.CommandLine }"],
             capture_output=True, text=True, timeout=8).stdout
-        return {m.group(1) for m in re.finditer(r'--model\s+(\S+)', out)}
+        tags = set()
+        for line in out.splitlines():
+            mm = re.search(r'--model\s+(\S+)', line)
+            if not mm:
+                continue
+            model = mm.group(1)
+            md = re.search(r'--dataset\s+(\S+)', line)
+            dataset = md.group(1) if md else 'imagenet32'
+            tags.add(model if dataset == 'imagenet32' else f'{dataset}_{model}')
+        return tags
     except Exception:
         return set()
 
@@ -156,6 +169,42 @@ def live_tags():
 def bar(frac, width=18, color='white'):
     n = int(max(0.0, min(1.0, frac)) * width)
     return Text(FULL * n + EMPTY * (width - n), style=color)
+
+
+_REF_IPS_CACHE = {}
+
+
+def _ref_ips(model):
+    """This model's characteristic throughput (median img/s) from a prior completed run -- the
+    'previous stats' the Predicted ETA is built on. Read once per model and cached. It transfers
+    across datasets because the models are all 32x32: the ImageNet vit and a CIFAR vit push the same
+    FLOPs per image, so the same card serves them at the same rate."""
+    if model not in _REF_IPS_CACHE:
+        ips = None
+        try:
+            d = json.load(open(os.path.join(RUNS, f'{model}_result.json')))
+            vals = sorted(e['train']['img_s'] for e in d.get('history', [])
+                          if 'train' in e and 'img_s' in e['train'])
+            ips = vals[len(vals) // 2] if vals else None
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            ips = None
+        _REF_IPS_CACHE[model] = ips
+    return _REF_IPS_CACHE[model]
+
+
+def _predict_total_s(dataset, model, total_epochs):
+    """Predicted wall-clock for the whole run, from the model's characteristic throughput on a prior
+    run rather than this run's live pace -- so it is a genuine prediction to hold the live estimate
+    against, not a restatement of it. None when we have no reference throughput for the model yet.
+
+    We can't probe this workstation for a peak-TFLOPS roofline while it is busy training (the probe
+    would contend with the run and misread), so we use the measured previous-run throughput directly,
+    which is the same quantity the roofline would have produced for a repetitive training loop."""
+    ref = _ref_ips(model)
+    if not ref or not dataset:
+        return None
+    n_train = 1_281_167 if dataset == 'imagenet32' else 50_000
+    return total_epochs * n_train / ref + 15.0     # +15 s one-time startup (data upload + autotune)
 
 
 def render(t0):
@@ -205,13 +254,14 @@ def render(t0):
         col = COLOR.get(tag, 'white')
         running = tag in alive
         total = _total_epochs(tag)
-        gpu, params = _run_meta(tag)
+        gpu, params, dataset = _run_meta(tag)
 
-        # The card title carries the run's size and card, e.g. "resnet18   12M param  cuda:0". The
-        # parameter count is the main reason throughput differs so much between models -- a bigger
-        # model does more math per image -- and the card says which GPU the run is pinned to.
+        # The card title carries the run's dataset, size, and card, e.g. "vit   cifar100  11M param
+        # cuda:0". The parameter count is the main reason throughput differs so much between models --
+        # a bigger model does more math per image -- and the card says which GPU the run is pinned to.
         title = f'[bold {col}]{tag}[/]'
-        meta = (([f'{params/1e6:.0f}M param'] if params else [])
+        meta = (([dataset] if dataset else [])
+                + ([f'{params/1e6:.0f}M param'] if params else [])
                 + ([f'cuda:{gpu}'] if gpu is not None else []))
         if meta:
             title += '   [dim]' + '  '.join(meta) + '[/]'
@@ -233,54 +283,68 @@ def render(t0):
         tr1, va1 = last['train']['top1'], last['val']['top1']
         gap = tr1 - va1
 
-        # Part C: The run's headline state. If it's not alive, it's 'DONE' when it hit its epoch
-        # budget, else 'STOPPED' (red). If it's still alive but top-1 slid more than 0.02 below a
-        # couple epochs ago it's 'REGRESSING'; otherwise it's just training.
+        # Part C: The run's headline state, as (text, style). If it's not alive, it's 'DONE' when it
+        # hit its epoch budget, else 'STOPPED' (red). If it's still alive but top-1 slid more than
+        # 0.02 below a couple epochs ago it's 'REGRESSING'; otherwise it's just training.
         if not running:
-            state = Text('DONE', style='bold green') if ep >= total else Text('STOPPED', style='bold red')
+            state_txt, state_sty = ('DONE', 'bold green') if ep >= total else ('STOPPED', 'bold red')
         elif len(top1s) >= 3 and top1s[-1] < top1s[-3] - 0.02:
-            state = Text('REGRESSING', style='bold yellow')
+            state_txt, state_sty = 'REGRESSING', 'bold yellow'
         else:
-            state = Text('training', style='green')
+            state_txt, state_sty = 'training', 'green'
 
         # Part D: The overfitting verdict, but only when train-vs-val is a fair comparison. Under
-        # mixup/CutMix the train accuracy is scored on blended images against the dominant label,
-        # so it's a different (harder) exam than clean validation; the gap is not interpretable
-        # and can even go negative. Judging it anyway is exactly the mistake we made reading the
-        # CIFAR curves, so we print 'gap n/a (mixup)' and leave it ungraded.
+        # mixup/CutMix the train accuracy is scored on blended images against the dominant label, so
+        # it's a different (harder) exam than clean validation; the gap is not interpretable and can
+        # even go negative. Judging it anyway is exactly the mistake we made reading the CIFAR curves,
+        # so we print 'gap n/a (mixup)' and leave it ungraded.
         aug = _strong_aug(tag)
         if aug:
-            health = Text('gap n/a (mixup)', style='dim')
+            health_txt, health_sty = 'gap n/a (mixup)', 'dim'
         elif gap > 0.35:
-            health = Text(f'gap {gap:+.0%} MEMORIZING', style='bold red')
+            health_txt, health_sty = f'gap {gap:+.0%} MEMORIZING', 'bold red'
         elif gap > 0.15:
-            health = Text(f'gap {gap:+.0%} overfitting', style='yellow')
+            health_txt, health_sty = f'gap {gap:+.0%} overfitting', 'yellow'
         else:
-            health = Text(f'gap {gap:+.0%} healthy', style='green')
+            health_txt, health_sty = f'gap {gap:+.0%} healthy', 'green'
 
-        # Part E: Progress and ETA. `frac` blends finished epochs with the live tqdm fraction of
-        # the current one; per-epoch time is the median of the last 5 (plus 4s slack), giving a
-        # steady ETA that doesn't lurch when one epoch happens to run long.
+        # Part E: Progress, throughput, and the two ETAs. `frac` blends finished epochs with the live
+        # tqdm fraction of the current one. `per_ep` is this run's own recent wall time per epoch (from
+        # the cumulative-elapsed deltas, so it counts eval), which drives the ESTIMATED time left. The
+        # PREDICTED total is independent: the model's characteristic throughput on a prior run (see
+        # _predict_total_s), a real prediction to hold the live estimate against.
         frac = (ep + (prog['frac'] if prog else 0)) / max(1, total)
         ips = (prog or {}).get('img_s') or last['train']['img_s']
-        recent = [r['train']['sec'] for r in rows[-5:]]
-        per_ep = sorted(recent)[len(recent) // 2] + 4
-        eta = _fmt((total - ep) * per_ep) if running else '-'
+        elapsed = last['elapsed']
+        k = min(5, len(rows) - 1)
+        per_ep = (elapsed - rows[-k - 1]['elapsed']) / k if k > 0 else elapsed
+        remaining = _fmt((total - ep) * per_ep) if (running and ep < total) else '-'
+        model = tag[len(dataset) + 1:] if (dataset and tag.startswith(dataset + '_')) else tag
+        pred_s = _predict_total_s(dataset, model, total)
+        predicted = _fmt(pred_s) if pred_s else '?'
+        lr = last.get('lr')
 
-        # Part F: Assemble the card. Row 1 is the progress bar, state, throughput and ETA, row 2
-        # the val/best/train numbers and health verdict, row 3 the full-history top-1 sparkline.
-        t = Table.grid(padding=(0, 1))
-        t.add_row(bar(frac, 30, col),
-                  Text(f'{ep}/{total}', style='bold'),
-                  state,
-                  Text(f'{ips/1000:.1f}k img/s', style='dim'),
-                  Text(f'ETA {eta}', style='dim'))
-        t.add_row(Text(f'val  top1 {va1:6.2%}   top5 {last["val"]["top5"]:6.2%}', style=col),
-                  Text(f'best {best:.2%} @ep{best_ep}', style='bold'),
-                  Text(f'train{"(aug)" if aug else ""} {tr1:.2%}', style='dim'),
-                  health)
-        t.add_row(Text(sparkline(top1s, 60), style=col))
-        blocks.append(Panel(t, title=title, border_style='grey37', padding=(0, 1)))
+        # Part F: Assemble the card as fixed-width lines, so the same field sits at the same column on
+        # every card. The sparkline is its own line, NOT a grid cell: as a column-0 cell its width
+        # (60 for a long run, 40 for a short one) stretched that column and shoved every field right by
+        # a different amount per card -- exactly the misalignment this fixes.
+        L1 = bar(frac, 30, col) + Text.assemble(
+            '  ', (f'ep {ep:>3}/{total:<4}', 'bold'), '   ',
+            (f'{state_txt:<11}', state_sty), (f'{ips/1000:>6.1f}k img/s', 'dim'))
+        L2 = Text.assemble(
+            ('val   ', 'dim'), (f'top1 {va1:6.2%}  top5 {last["val"]["top5"]:6.2%}', col),
+            ('    best ', 'dim'), (f'{best:6.2%} @ep{best_ep:<4}', 'bold'), (health_txt, health_sty))
+        L3 = Text.assemble(
+            ('train ', 'dim'), (f'{"(aug) " if aug else "      "}{tr1:6.2%}', 'dim'),
+            ('    lr ', 'dim'), (f'{lr:8.5f}' if lr is not None else '   -    ', 'dim'),
+            ('    loss ', 'dim'), (f'{last["train"]["loss"]:6.3f}', 'dim'))
+        L4 = Text.assemble(
+            ('time  ', 'dim'), ('elapsed ', 'dim'), (f'{_fmt(elapsed):<6}', ''),
+            ('  remaining ', 'dim'), (f'{remaining:<6}', 'cyan'),
+            ('  predicted ', 'dim'), (f'{predicted:<6}', 'magenta'),
+            ('  ', 'dim'), (f'{per_ep:.1f}s/ep', 'dim'))
+        L5 = Text(sparkline(top1s, 60), style=col)
+        blocks.append(Panel(Group(L1, L2, L3, L4, L5), title=title, border_style='grey37', padding=(0, 1)))
 
     blocks.append(Text('  ref: WRN-28-10 = 59.0% top-1 / 81.1% top-5 (Chrabaszcz 2017)  |  '
                        f'watching {_fmt(time.time()-t0)}  |  read-only, Ctrl+C safe', style='dim'))
@@ -348,7 +412,7 @@ def _run_meta(tag):
     win over the current run's.
     """
     p = os.path.join(LOGS, f'{tag}.log')
-    gpu, params = None, None
+    gpu, params, dataset = None, None, None
     try:
         with open(p, errors='replace') as f:
             for line in f:
@@ -358,9 +422,15 @@ def _run_meta(tag):
                 m = re.search(r'([\d,]+) parameters', line)
                 if m:
                     params = int(m.group(1).replace(',', ''))
+                # Anchor on the " |" that follows the dataset in the config line ("dataset cifar100 |
+                # strong aug ..."), so we don't match the words in "dataset resident on GPU: ..." that
+                # older ImageNet logs print, which would set dataset to 'resident'.
+                m = re.search(r'dataset (\w+)\s+\|', line)
+                if m:
+                    dataset = m.group(1)
     except OSError:
         pass
-    return gpu, params
+    return gpu, params, dataset
 
 
 def _fmt(s):

@@ -229,6 +229,7 @@ __marimo__/
 src/a1-cv/data/
 src/a1-cv/runs/**/*.pt
 src/a1-cv/runs/_old/
+src/a1-cv/runs/smoke-*
 src/a1-cv/logs/
 src/a1-cv/cifar10_resnet18.pt
 src/a1-cv/weights/

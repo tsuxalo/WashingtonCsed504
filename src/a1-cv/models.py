@@ -163,6 +163,9 @@ WEIGHTS = {
     'imagenet32/vit':      ('vit', 1000),
     'imagenet32/vit_base': ('vit_base', 1000),
     'cifar10/resnet18':    ('resnet18', 10),
+    'cifar10/vit':         ('vit', 10),
+    'cifar100/resnet18':   ('resnet18', 100),
+    'cifar100/vit':        ('vit', 100),
 }
 
 
