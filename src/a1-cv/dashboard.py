@@ -205,13 +205,14 @@ def render(t0):
         col = COLOR.get(tag, 'white')
         running = tag in alive
         total = _total_epochs(tag)
-        gpu, params = _run_meta(tag)
+        gpu, params, dataset = _run_meta(tag)
 
-        # The card title carries the run's size and card, e.g. "resnet18   12M param  cuda:0". The
-        # parameter count is the main reason throughput differs so much between models -- a bigger
-        # model does more math per image -- and the card says which GPU the run is pinned to.
+        # The card title carries the run's dataset, size, and card, e.g. "vit   cifar100  11M param
+        # cuda:0". The parameter count is the main reason throughput differs so much between models --
+        # a bigger model does more math per image -- and the card says which GPU the run is pinned to.
         title = f'[bold {col}]{tag}[/]'
-        meta = (([f'{params/1e6:.0f}M param'] if params else [])
+        meta = (([dataset] if dataset else [])
+                + ([f'{params/1e6:.0f}M param'] if params else [])
                 + ([f'cuda:{gpu}'] if gpu is not None else []))
         if meta:
             title += '   [dim]' + '  '.join(meta) + '[/]'
@@ -348,7 +349,7 @@ def _run_meta(tag):
     win over the current run's.
     """
     p = os.path.join(LOGS, f'{tag}.log')
-    gpu, params = None, None
+    gpu, params, dataset = None, None, None
     try:
         with open(p, errors='replace') as f:
             for line in f:
@@ -358,9 +359,12 @@ def _run_meta(tag):
                 m = re.search(r'([\d,]+) parameters', line)
                 if m:
                     params = int(m.group(1).replace(',', ''))
+                m = re.search(r'dataset (\w+)', line)
+                if m:
+                    dataset = m.group(1)
     except OSError:
         pass
-    return gpu, params
+    return gpu, params, dataset
 
 
 def _fmt(s):
