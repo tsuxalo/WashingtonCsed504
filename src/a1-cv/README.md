@@ -26,13 +26,27 @@ and where to start.**
 | `cifar100_train.ipynb` | CIFAR-100 from the HuggingFace Hub — a second data source through the same models |
 | `imagenet32_train.ipynb` | ImageNet-32 (1.28M, 1000 classes) — the scoreboard + crossover, and how to launch the real run |
 
-Each notebook is meant to run **`fast`** in-notebook (a small subset, a few epochs — minutes) so you can
-watch it work end to end. The full multi-hour **`perf`** training is driven from the terminal (below),
-and the report reads whichever results are on disk.
+Each dataset notebook is a **fast** interactive check (a small subset, a few epochs — a minute or two)
+so you can watch it work end to end. The full, expensive training runs from the terminal (below), never
+in a notebook, so the two never get conflated; the reports read whichever results are on disk.
 
-> The shared `fast` / `perf` config knob is already in `report_factory_performance.ipynb`; wiring the
-> same knob into the three dataset notebooks (so one `train_run.py` does every dataset's `perf` run
-> overnight) is the next step.
+## Get the trained models — no training required
+
+Every trained model is published on the **[`models-v1` release](https://github.com/TrueRottweiler/WashingtonCsed504/releases/tag/models-v1)** (weights only, ~45–350 MB each). You do **not** clone them (they're too big for git) and you do **not** retrain — `load_model` downloads the one you ask for, caches it locally, and hands back a ready-to-eval model. No GPU needed.
+
+```python
+from models import load_model          # run from inside src/a1-cv/ (with the uw-csed504 env active)
+net = load_model("cifar100/vit")       # downloads once, returns a ready nn.Module in eval mode
+```
+
+Tags: `imagenet32/{resnet18,resnet50,vit,vit_base}`, `cifar10/{resnet18,vit}`, `cifar100/{resnet18,vit}`. Top-1 accuracy:
+
+| | CIFAR-10 | CIFAR-100 | ImageNet-32 |
+|---|---|---|---|
+| **CNN** (ResNet) | 92.7% | 74.3% | 41.7% |
+| **ViT** | 85.1% | 62.4% | 43.0% |
+
+The **crossover**: the CNN wins on small/medium data, the ViT only once the data is large (1000 classes, 1.28M images). See `report_crossover.ipynb` for the cost/benefit story behind these numbers.
 
 ## Python — the shared machinery
 
@@ -64,28 +78,32 @@ runs/          checkpoints + per-epoch metrics (one set per run name)
 logs/          per-run stdout
 ```
 
-## Running the real (`perf`) training
+## Running the real training (from the console)
 
-CIFAR is small enough to just run its notebook. ImageNet-32 takes hours, so it runs from the terminal:
+All full training — every dataset — runs from the terminal through one trainer, so it never conflates
+with the fast notebooks. `--dataset` picks the data; the recipe (optimizer, augmentation, LR, gradient
+clipping) follows the model automatically.
 
 ```bash
-# 1. one-time: get + decode the dataset (writes data/imagenet32/, ~3.9 GB)
-git clone https://huggingface.co/datasets/benjamin-paine/imagenet-1k-32x32   # accept the ImageNet terms first
+# CIFAR (data auto-downloads from HuggingFace on first use):
+python src/a1-cv/train_run.py --dataset cifar100 --model vit --epochs 200
+#   ...or the whole CIFAR retraining across both GPUs in one command (both ViTs get 200 epochs):
+python src/a1-cv/train_fleet.py --queue retrain
+
+# ImageNet-32 needs its 3.9 GB prepared once first:
+git clone https://huggingface.co/datasets/benjamin-paine/imagenet-1k-32x32   # accept the ImageNet terms
 python src/a1-cv/imagenet_prepare.py
+python src/a1-cv/train_fleet.py                       # the ImageNet-32 capstone on both cards
 
-# 2. train — one card each, concurrently...
-python src/a1-cv/train_run.py --model resnet18 --gpu 0 --epochs 40
-python src/a1-cv/train_run.py --model vit      --gpu 1 --epochs 60
-#    ...or fill both cards from a queue:
-python src/a1-cv/train_fleet.py
-
-# 3. watch it (from another terminal)
+# watch any run live, from another terminal:
 python src/a1-cv/dashboard.py
 ```
 
-`--smoke-test` runs a 30-second sanity check and exits — always run it first. `--resume` picks up from
-the last checkpoint. Results land in `runs/`; open `imagenet32_train.ipynb` to read the scoreboard and
-plot the crossover.
+`--smoke-test` runs a quick sanity check and exits — run it first. `--resume` picks up from the last
+checkpoint. Results land in `runs/`; the report notebooks read them.
+
+> **Teammates don't need any of this.** To *use* a trained model, skip straight to `load_model` above —
+> no dataset, no GPU, no training.
 
 ## Shared / elsewhere
 - Device detection (`get_device`, seeds, multi-GPU selection) is `../common/gpu_check.py` — shared with
