@@ -113,14 +113,13 @@ def main():
     # We use a separate tag on purpose. Reusing the real tag once appended 2 bogus 50k-subset
     # epochs to the front of the real run's JSONL, which would have quietly corrupted every plot
     # downstream. A distinct smoke-* stem keeps the throwaway history in its own file.
-    # ImageNet-32 runs keep their bare model name (resnet18, vit, ...) so they stay back-compatible
-    # with the published results; CIFAR runs are prefixed with the dataset, so cifar100_vit never
-    # collides with the ImageNet vit in runs/ or on the dashboard.
+    # Every run is named <dataset>_<model>, so a tag says what it is without needing context and
+    # cifar100_vit can never be confused with imagenet32_vit in runs/ or on the dashboard.
     #
     # The smoke prefix is applied last, after any --tag, so it cannot be escaped. The fleet passes an
     # explicit --tag for seed repeats, and without this a '--tag vit_s1 --smoke-test' would have
     # written its throwaway 2-epoch history straight into the real vit_s1 files.
-    base = args.model if args.dataset == 'imagenet32' else f'{args.dataset}_{args.model}'
+    base = f'{args.dataset}_{args.model}'
     tag = args.tag or base
     if args.smoke_test:
         tag = f'smoke-{tag}'

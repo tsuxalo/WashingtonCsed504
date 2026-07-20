@@ -57,7 +57,7 @@ N_CLASSES = 1000
 def _decode(payload: bytes) -> np.ndarray:
     """Decode one JPEG blob into a (32, 32, 3) uint8 array. Module-level so Windows 'spawn' workers can pickle it."""
 
-    # A handful of ImageNet images are greyscale or CMYK, so force everything to RGB and keep the
+    # A handful of ImageNet images are grayscale or CMYK, so force everything to RGB and keep the
     # decoded arrays a uniform three-channel shape.
     im = Image.open(io.BytesIO(payload))
     if im.mode != 'RGB':

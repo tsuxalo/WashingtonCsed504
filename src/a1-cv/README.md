@@ -152,7 +152,8 @@ as each finishes. It ships with the two batches that make up this study:
 ```bash
 python train_fleet.py --queue cifar       # the four CIFAR models        (~30 min on two GPUs)
 python train_fleet.py --queue imagenet    # the four ImageNet-32 models   (several hours)
-python train_fleet.py --queue seeds       # the two headline models again, at 3 seeds (~3 h)
+python train_fleet.py --queue seeds       # both headline models, 80 epochs x 3 seeds (~5 h)
+python train_fleet.py --queue overnight   # the above plus both capacity models  (~12 h)
 ```
 
 `cifar` trains `resnet18` and `vit` on both CIFAR-10 and CIFAR-100; `imagenet` trains `resnet18`,
@@ -161,12 +162,20 @@ results table. Each batch already carries the right schedule per model — the V
 Transformer needs a long run to converge), the ResNets far fewer — so you don't have to remember them.
 Add `--smoke` to prove the wiring in about a minute first.
 
-`seeds` is different: it re-runs the same two headline models under several seeds so the crossover can
-be quoted with a spread instead of a single number. That matters here because the gap between the two
-arms is about a point, and two runs of one configuration already differ by a few tenths — a single run
-per arm can't tell you whether the gap is real. The repeats are tagged `resnet18_s1`, `vit_s1`, and so
-on, so they sit beside the originals rather than overwriting them, and the ImageNet-32 notebook
-summarizes them as a mean and a spread.
+`seeds` is different, and it settles two questions at once. It re-runs both headline models **at 80
+epochs, under three seeds each**.
+
+The first question is spread: the gap between the two arms is about a point, and two runs of one
+configuration already differ by a few tenths, so a single run per arm can't tell you whether the gap is
+real. The second is the epoch budget. Every CNN run peaks on its final epoch, which looks like it was
+stopped early — but the learning rate anneals to zero over whatever budget it's given, so a late peak
+is what that schedule always produces. Going from 40 to 60 epochs gained the CNN only 0.2 points;
+the catch is that control used gradient clipping, while the CNN we quote runs without it, so the
+headline configuration has never had an epoch control. Doubling the budget answers it.
+
+The repeats are tagged `resnet18_s1`, `vit_s1`, and so on, so they sit beside the originals rather than
+overwriting them, and the ImageNet-32 notebook summarizes them as a mean and a spread — grouped by
+budget, so the 80-epoch runs are never averaged in with the 40-epoch ones.
 
 On a single-GPU laptop you don't need the fleet at all — run the models one at a time with
 `train_run.py` (step 1).
