@@ -52,20 +52,34 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS, LOGS = os.path.join(HERE, 'runs'), os.path.join(HERE, 'logs')
 
-# Same palette as the notebook's scoreboard: colorblind-safe, one hue per model so a given run
-# stays the same color everywhere you look.
-COLOR = {'resnet18': 'dark_orange3', 'resnet50': 'orange1',
-         'vit': 'spring_green4', 'vit_base': 'medium_purple3'}
+# The same scheme the notebooks use: one hue per dataset, the CNN its darker shade and the ViT its
+# lighter one. Holding a CNN against a ViT on the same data is the comparison that matters, so those
+# two share a hue; the datasets, which are not comparable to each other, are told apart by hue instead.
+# The terminal names are the closest 256-color matches to the notebook's hexes, so a run looks the
+# same here as it does in the charts (dark_orange3 is rgb 215,95,0 against #D55E00's 213,94,0).
+PALETTE = {
+    'cifar10':    ('dark_orange3',   'orange1'),
+    'cifar100':   ('deep_sky_blue4', 'sky_blue2'),
+    'imagenet32': ('green4',         'aquamarine3'),
+}
 
 
 def color_for(tag):
-    """The run's color, keyed by the model inside its tag so every dataset, seed and variant of one
-    model shares a hue. Tags are <dataset>_<model>[_variant][_sN], so strip the seed and the dataset
-    before looking up; anything unrecognised falls back to white rather than failing."""
-    stem = re.sub(r'_s\d+$', '', tag)
-    for prefix in ('imagenet32_', 'cifar100_', 'cifar10_'):
-        stem = stem.removeprefix(prefix)
-    return COLOR.get(stem, 'white')
+    """The run's color, matching the notebooks.
+
+    Tags are <dataset>_<model>[_variant][_sN], so the dataset comes off the front and the family from
+    the model that follows. Every seed and variant of one family therefore shares its shade, which is
+    what we want on a dashboard showing three seeds of the same run side by side. Anything we do not
+    recognise falls back to white rather than failing.
+    """
+    for dataset, (cnn, vit) in PALETTE.items():
+        if tag.startswith(dataset + '_'):
+            model = tag[len(dataset) + 1:]
+            return vit if model.startswith('vit') else cnn
+
+    return 'white'
+
+
 SPARK = ' ▁▂▃▄▅▆▇█' if UNICODE else ' .:-=+*#%'
 FULL, EMPTY = ('█', '░') if UNICODE else ('#', '.')
 
@@ -150,8 +164,8 @@ def live_tags():
 
     We ask Windows for every python.exe whose command line mentions train_run.py and work out the tag
     each one is writing under, exactly the way train_run.py does: an explicit --tag if the process was
-    given one, otherwise the bare model name on ImageNet-32 and a dataset-prefixed name on CIFAR. That
-    is what tells a 'DONE' card from a 'STOPPED' one, and lets a card exist before its first JSONL row.
+    given one, otherwise <dataset>_<model>. That is what tells a 'DONE' card from a 'STOPPED' one, and
+    lets a card exist before its first JSONL row is written.
 
     We must rebuild the whole tag, not just read --model. Matching on --model alone drew a live
     cifar100_vit as STOPPED, because its process says '--model vit' while its tag is 'cifar100_vit'.
