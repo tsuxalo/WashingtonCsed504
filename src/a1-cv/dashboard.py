@@ -496,11 +496,15 @@ def main():
     if a.once:
         console.print(render(t0))
         return
-    with Live(render(t0), console=console, refresh_per_second=4, screen=False) as live:
+    # auto_refresh is off on purpose. Left on, rich repaints on its own timer several times a second
+    # while the content only changes once per interval, so a frame taller than the terminal gets
+    # redrawn and scrolled repeatedly for no reason -- which is the flicker you see. Driving the
+    # refresh ourselves means exactly one repaint per actual update.
+    with Live(render(t0), console=console, auto_refresh=False, screen=False) as live:
         try:
             while True:
                 time.sleep(a.interval)
-                live.update(render(t0))
+                live.update(render(t0), refresh=True)
         except KeyboardInterrupt:
             pass
 
