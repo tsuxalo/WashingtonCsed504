@@ -138,10 +138,10 @@ def gpus():
 def live_tags():
     """Which runs have a train_run.py process actually running right now?
 
-    We ask Windows for every python.exe whose command line mentions train_run.py, then rebuild each
-    run's tag from its --dataset and --model exactly the way train_run.py does: the bare model name on
-    ImageNet-32, dataset-prefixed on CIFAR. That's what tells a 'DONE' card from a 'STOPPED' one, and
-    lets a card exist before its first JSONL row is written.
+    We ask Windows for every python.exe whose command line mentions train_run.py and work out the tag
+    each one is writing under, exactly the way train_run.py does: an explicit --tag if the process was
+    given one, otherwise the bare model name on ImageNet-32 and a dataset-prefixed name on CIFAR. That
+    is what tells a 'DONE' card from a 'STOPPED' one, and lets a card exist before its first JSONL row.
 
     We must rebuild the whole tag, not just read --model. Matching on --model alone drew a live
     cifar100_vit as STOPPED, because its process says '--model vit' while its tag is 'cifar100_vit'.
@@ -154,13 +154,25 @@ def live_tags():
             capture_output=True, text=True, timeout=8).stdout
         tags = set()
         for line in out.splitlines():
-            mm = re.search(r'--model\s+(\S+)', line)
-            if not mm:
-                continue
-            model = mm.group(1)
-            md = re.search(r'--dataset\s+(\S+)', line)
-            dataset = md.group(1) if md else 'imagenet32'
-            tags.add(model if dataset == 'imagenet32' else f'{dataset}_{model}')
+            # An explicit --tag wins, because that is the name train_run.py writes its files under.
+            # The seed repeats rely on this: they run '--model resnet18 --tag resnet18_s1', so
+            # rebuilding from the model alone would credit the live run to the older resnet18 card
+            # and leave the repeat looking STOPPED for the whole night.
+            mt = re.search(r'--tag\s+(\S+)', line)
+            if mt:
+                base = mt.group(1)
+            else:
+                mm = re.search(r'--model\s+(\S+)', line)
+                if not mm:
+                    continue
+
+                model = mm.group(1)
+                md = re.search(r'--dataset\s+(\S+)', line)
+                dataset = md.group(1) if md else 'imagenet32'
+                base = model if dataset == 'imagenet32' else f'{dataset}_{model}'
+
+            # The smoke prefix goes on last, whichever way the stem was found, mirroring train_run.py.
+            tags.add(f'smoke-{base}' if '--smoke-test' in line else base)
         return tags
     except Exception:
         return set()

@@ -150,8 +150,9 @@ batch of them, and on a two-GPU machine keeps both cards busy — one model per 
 as each finishes. It ships with the two batches that make up this study:
 
 ```bash
-python train_fleet.py --queue cifar       # the four CIFAR models       (~30 min on two GPUs)
-python train_fleet.py --queue imagenet    # the four ImageNet-32 models  (several hours)
+python train_fleet.py --queue cifar       # the four CIFAR models        (~30 min on two GPUs)
+python train_fleet.py --queue imagenet    # the four ImageNet-32 models   (several hours)
+python train_fleet.py --queue seeds       # the two headline models again, at 3 seeds (~3 h)
 ```
 
 `cifar` trains `resnet18` and `vit` on both CIFAR-10 and CIFAR-100; `imagenet` trains `resnet18`,
@@ -159,6 +160,13 @@ python train_fleet.py --queue imagenet    # the four ImageNet-32 models  (severa
 results table. Each batch already carries the right schedule per model — the ViTs get 200 epochs (a
 Transformer needs a long run to converge), the ResNets far fewer — so you don't have to remember them.
 Add `--smoke` to prove the wiring in about a minute first.
+
+`seeds` is different: it re-runs the same two headline models under several seeds so the crossover can
+be quoted with a spread instead of a single number. That matters here because the gap between the two
+arms is about a point, and two runs of one configuration already differ by a few tenths — a single run
+per arm can't tell you whether the gap is real. The repeats are tagged `resnet18_s1`, `vit_s1`, and so
+on, so they sit beside the originals rather than overwriting them, and the ImageNet-32 notebook
+summarizes them as a mean and a spread.
 
 On a single-GPU laptop you don't need the fleet at all — run the models one at a time with
 `train_run.py` (step 1).
@@ -186,6 +194,61 @@ python imagenet_prepare.py
 ```
 
 You only need this if you're training on ImageNet — not to use a published `imagenet32/*` model.
+
+---
+
+## Adding your own experiment
+
+The baseline is meant to be built on. Everything here is additive — you shouldn't need to move or
+rename an existing file.
+
+**1. Add a model.** Architectures live in [`models.py`](models.py). Write a builder that takes
+`num_classes` and returns an `nn.Module`, then register it in the `BUILDERS` dict:
+
+```python
+BUILDERS = {
+    ...
+    'vit_small': make_vit_small,
+}
+```
+
+That name is immediately a valid `--model` everywhere: `train_run.py`, `train_fleet.py`, and the
+notebooks all read the same dict, so there is nothing else to wire up.
+
+**Name it deliberately** — the recipe is chosen from the model's *name*, not from a config you have to
+remember:
+
+- a name starting with `vit` gets AdamW and the strong augmentation a Transformer needs
+- anything else gets SGD with momentum and no mixup
+- gradient clipping defaults on, except for exactly `resnet18`, where it cost about five points
+
+So `vit_small` inherits the Transformer recipe for free, while `myresnet` inherits the CNN one. Any of
+it can be overridden with `--strong-aug` / `--no-strong-aug`, `--clip`, `--lr`, and the rest.
+
+**2. Train it.** Prove the wiring first, then run it for real:
+
+```bash
+python train_run.py --dataset cifar100 --model vit_small --smoke-test   # ~1 min, then exits
+python train_run.py --dataset cifar100 --model vit_small --epochs 40
+```
+
+**3. Repeat it before you believe it.** One run is one sample, and two runs of the same configuration
+here land a few tenths of a point apart. `--seed` re-runs it under a different seed; give the repeat
+its own `--tag` so it sits beside the original instead of overwriting it:
+
+```bash
+python train_run.py --dataset cifar100 --model vit_small --epochs 40 --seed 2 --tag vit_small_s2
+```
+
+**4. Where the results go.** Each run appends `runs/<tag>.jsonl` (one line per epoch) and writes
+`runs/<tag>_result.json` when it finishes. The report notebooks read those files off disk, so a new run
+shows up in the tables without editing a notebook. Commit the small `.jsonl` and `_result.json`; the
+checkpoint (`runs/<tag>.pt`), the datasets, and the logs are git-ignored on purpose, so it's hard to
+accidentally push a few hundred MB.
+
+**Keep the notebooks fast.** They are pipeline checks that finish in a minute or two. Long training
+belongs on the command line, where an hours-long run can't be confused with an interactive experiment —
+then let the report notebooks read the result off disk.
 
 ---
 
