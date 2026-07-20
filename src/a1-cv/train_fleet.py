@@ -13,6 +13,7 @@ next" part.
 Usage (pick a preset batch of models to train, or a custom one):
     python train_fleet.py --queue cifar          # train the four CIFAR models on both cards (~30 min)
     python train_fleet.py --queue imagenet       # train the four ImageNet-32 models (several hours)
+    python train_fleet.py --queue seeds          # repeat the two headline models at 3 seeds (~3 h)
     python train_fleet.py --queue cifar --smoke  # prove the wiring first (~1 min), then it exits
     python train_fleet.py --dataset cifar100 --models resnet18 vit --epochs 40   # a custom batch
     python train_fleet.py --data-parallel --models vit_base   # one model split across both cards (see below)
@@ -72,6 +73,16 @@ QUEUES = {
                  ('cifar100', 'resnet18', 40), ('cifar10', 'resnet18', 30)],
     'imagenet': [('imagenet32', 'resnet18', None), ('imagenet32', 'vit', None),
                  ('imagenet32', 'resnet50', None), ('imagenet32', 'vit_base', None)],
+
+    # The two headline models trained again under three seeds each. A spec's optional fourth element
+    # is the seed, and those runs take their own _sN tags so a repeat lands beside the original
+    # instead of overwriting it. This is what lets the crossover be quoted with a spread rather than
+    # a single number: the gap we report is about 1.3 points, and two runs of the same configuration
+    # already differ by roughly 0.7, so one run per arm cannot settle whether the gap is real.
+    # Interleaved CNN, ViT, CNN, ViT so the two cards stay evenly loaded as the queue drains.
+    'seeds':    [('imagenet32', 'resnet18', 40, 1), ('imagenet32', 'vit', 40, 1),
+                 ('imagenet32', 'resnet18', 40, 2), ('imagenet32', 'vit', 40, 2),
+                 ('imagenet32', 'resnet18', 40, 3), ('imagenet32', 'vit', 40, 3)],
 }
 
 
@@ -80,9 +91,19 @@ def tag_base(dataset, model):
     return model if dataset == 'imagenet32' else f'{dataset}_{model}'
 
 
+def spec_name(spec):
+    """The run name for one queue spec, with the _sN suffix when the spec carries a seed.
+
+    Both the launcher and the startup summary need this name, so it lives in one place: if the two
+    ever disagreed, the dashboard would look for a log file the run never wrote.
+    """
+    base = tag_base(spec[0], spec[1])
+    return f'{base}_s{spec[3]}' if len(spec) > 3 else base
+
+
 def resolve_queue(args):
-    """Turn the CLI options into the list of (dataset, model, epochs) specs to run, or None when the
-    user has not said what to train.
+    """Turn the CLI options into the list of specs to run, or None when the user has not said what to
+    train. A spec is (dataset, model, epochs), optionally with a fourth element, the seed.
 
     A custom --models list wins (spread over the single --dataset at --epochs); otherwise we use the
     named preset from --queue, whose specs carry their own per-model epochs.
@@ -99,16 +120,21 @@ def launch(spec, gpu, args):
     Start one train_run.py run on one card and return a live handle we can poll later.
 
     Inputs:
-     - spec: a (dataset, model, epochs) tuple; epochs=None falls back to args.epochs
+     - spec: a (dataset, model, epochs) tuple, optionally with a fourth element, the seed;
+             epochs=None falls back to args.epochs
      - gpu: which CUDA card to pin this run to
      - args: the parsed command-line options (epochs, smoke, data_parallel)
 
     Returns:
      - a dict with the Popen process, the open log file, and some bookkeeping
     """
-    dataset, model, epochs = spec
+    dataset, model, epochs = spec[0], spec[1], spec[2]
     epochs = args.epochs if epochs is None else epochs
-    base = tag_base(dataset, model)
+
+    # A seeded spec is the same configuration run again under a different RNG seed. It takes its own
+    # _sN name so the repeat sits beside the original rather than overwriting its checkpoint and metrics.
+    seed = spec[3] if len(spec) > 3 else None
+    base = spec_name(spec)
 
     # Step 1: Build the command. It is the trainer we already have, pinned to this card and dataset.
     #
@@ -117,6 +143,11 @@ def launch(spec, gpu, args):
     # empty?" bug.
     cmd = [PY, '-u', '-W', 'ignore', os.path.join(HERE, 'train_run.py'),
            '--dataset', dataset, '--model', model, '--gpu', str(gpu), '--epochs', str(epochs)]
+
+    # Hand the seed down and name the run after it, so the repeats are told apart on disk.
+    if seed is not None:
+        cmd += ['--seed', str(seed), '--tag', base]
+
     if args.smoke:
         # A tiny subset, 2 epochs, then it exits: a wiring check before we spend real time.
         cmd.append('--smoke-test')
@@ -155,7 +186,7 @@ def run_fleet(args):
      - args: the parsed command-line options (queue/models, n_gpu, epochs, smoke)
     """
     queue = resolve_queue(args)
-    names = [tag_base(d, m) for d, m, _ in queue]
+    names = [spec_name(s) for s in queue]
     print(f'\nFleet: {len(queue)} runs {names} across {args.n_gpu} cards'
           f'{" (SMOKE)" if args.smoke else ""}\n')
 

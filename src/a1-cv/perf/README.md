@@ -16,8 +16,9 @@ estimation needs measurement, not spec sheets.
 
 | file | what it is |
 |---|---|
-| `training_time_estimator.ipynb` | run this on every machine (plugged in!) — probes, estimates, calibrates, validates, saves a record |
-| `perfkit.py` | the measurement/estimation library the notebook drives |
+| `training_time_estimator.ipynb` | run this on every machine (plugged in) — probes, estimates, calibrates, validates, saves a record |
+| `collect.py` | the same collection run headless, no Jupyter needed — handy over SSH or on a machine without a browser |
+| `perfkit.py` | the measurement/estimation library both of the above drive |
 | `results/*.json` | one record per (machine, power-state, workload) run — commit these; estimates compound as the database grows |
 
 ## The three tiers (accuracy stated honestly)
@@ -25,7 +26,7 @@ estimation needs measurement, not spec sheets.
 - **Tier 0 — probe** (~3 min, once per machine + power state): burst and **sustained** GEMM
   TFLOPS, memory bandwidth, kernel-launch overhead, H2D bandwidth. Never marketing numbers.
 - **Tier 1 — analytical roofline** (no target hardware needed):
-  `t_step = max(compute/MFU, memory, launch)` over an MFU band → answers *"2 minutes or 2 days?"*
+  `t_step = max(compute/MFU, memory, launch)` over an MFU band, which answers *"2 minutes or 2 days?"*
   Order-of-magnitude by design; this is the **redesign gate**.
 - **Tier 2 — calibration** (~2.5 min on the target): the real training step, warmed up and
   thermally soaked, extrapolated. **~5–10%** on desktops, **±10–15%** on power-capped laptops.
