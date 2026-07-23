@@ -71,7 +71,7 @@ def accuracy(logits: torch.Tensor, y: torch.Tensor, topk=(1, 5)) -> list[torch.T
 
 def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size, epoch, epochs,
                     use_amp=True, amp_dtype=torch.float16, channels_last=False,
-                    strong_aug=False, clip=None):
+                    strong_aug=False, clip=None, gradient_accumulation=1):
     model.train()
 
     # Step 1: Set up the epoch accumulators on the GPU.
@@ -96,8 +96,10 @@ def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size,
     bar = tqdm(ds.epoch(batch_size, train=True), total=n_batches,
                desc=f'epoch {epoch:3d}/{epochs} train', leave=False, ncols=110)
 
+    gradient_accumulation = max(1, int(gradient_accumulation))
+    optimizer.zero_grad(set_to_none=True)
+
     for step, (x, y) in enumerate(bar):
-        optimizer.zero_grad(set_to_none=True)
 
         # Step 3: Optionally apply the strong augmentation the ViTs need (erasing plus mixup/CutMix).
         #
@@ -135,12 +137,19 @@ def train_one_epoch(model, ds, optimizer, criterion, scaler, device, batch_size,
         # If we are clipping we must unscale first, because clip_grad_norm_ reads the true gradient
         # magnitudes and those are still multiplied by the loss scale until we undo it.
 
-        scaler.scale(loss).backward()
-        if clip:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-        scaler.step(optimizer)
-        scaler.update()
+        # Divide only the backward loss so accumulated gradients match the
+        # mean gradient over the effective batch. Keep the unscaled loss for
+        # metrics and divergence checks.
+        scaler.scale(loss / gradient_accumulation).backward()
+        should_step = ((step + 1) % gradient_accumulation == 0
+                       or (step + 1) == n_batches)
+        if should_step:
+            if clip:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
 
 
         # Step 6: Fold this batch into the running totals, all on the GPU, no sync.

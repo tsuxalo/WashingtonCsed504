@@ -1,0 +1,75 @@
+study:
+  name: resnet18-cifar10-research-expanded
+  output_dir: ../../../../hpo_outputs
+  storage_path: ../../../../hpo_outputs/resnet18-cifar10-research-expanded.db
+  seed: 42
+  resume: true
+search:
+  mode: successive_halving
+  sampler: tpe
+dataset:
+  name: cifar10
+  validation_fraction: 0.1
+  split_seed: 42
+  strategy: gpu_resident
+model:
+  name: resnet18
+search_space:
+  path: ../search_spaces/resnet18_cifar.csv
+objectives:
+- name: validation_top1
+  direction: maximize
+  primary: true
+- name: wall_seconds
+  direction: minimize
+- name: peak_gpu_memory_mb
+  direction: minimize
+constraints:
+- name: peak_gpu_memory_mb
+  operator: <=
+  value: 14000
+runtime:
+  device: auto
+  precision: auto
+  tf32: true
+  channels_last: true
+  compile: false
+  concurrent_trials: 1
+  memory_reserve_gb: 1.0
+  data_strategy: auto
+proxy:
+  enabled: true
+  trials: 30
+  epochs: 3
+  maximum_steps: null
+  train_fraction: 1.0
+  validation_fraction: 1.0
+  promote_top_k: 15
+successive_halving:
+  enabled: true
+  resource_type: epochs
+  rung_budgets:
+  - 5
+  - 15
+  - 40
+  reduction_factor: 3
+  minimum_trials_per_rung: 1
+  continue_checkpoints: true
+  promotion_metric: validation_top1
+full:
+  enabled: true
+  trials: 3
+  epochs: 120
+  data_fraction: 1.0
+  validation_fraction: 1.0
+  seeds:
+  - 7
+  - 21
+  - 42
+  exhaustive: false
+continuous:
+  enabled: false
+cost_rates:
+  gpu_usd_per_hour: null
+  cpu_usd_per_hour: null
+  storage_usd_per_gb_month: null

@@ -1,0 +1,72 @@
+study:
+  name: resnet18-cpu-smoke
+  output_dir: ../../../../hpo_outputs
+  storage_path: ../../../../hpo_outputs/resnet18-cpu-smoke.db
+  seed: 42
+  resume: true
+search:
+  mode: successive_halving
+  sampler: tpe
+dataset:
+  name: synthetic
+  train_examples: 256
+  validation_examples: 64
+  test_examples: 64
+  num_classes: 10
+model:
+  name: resnet18
+search_space:
+  path: ../search_spaces/resnet18_cifar.csv
+objectives:
+- name: validation_top1
+  direction: maximize
+  primary: true
+- name: wall_seconds
+  direction: minimize
+- name: peak_gpu_memory_mb
+  direction: minimize
+constraints:
+- name: peak_gpu_memory_mb
+  operator: <=
+  value: 14000
+runtime:
+  device: cpu
+  precision: fp32
+  tf32: true
+  channels_last: false
+  compile: false
+  concurrent_trials: 2
+  memory_reserve_gb: 1.0
+  data_strategy: auto
+proxy:
+  enabled: true
+  trials: 4
+  epochs: 1
+  maximum_steps: 2
+  train_fraction: 1.0
+  validation_fraction: 1.0
+  promote_top_k: 2
+successive_halving:
+  enabled: true
+  resource_type: epochs
+  rung_budgets:
+  - 2
+  reduction_factor: 2
+  minimum_trials_per_rung: 1
+  continue_checkpoints: true
+  promotion_metric: validation_top1
+full:
+  enabled: true
+  trials: 1
+  epochs: 1
+  data_fraction: 1.0
+  validation_fraction: 1.0
+  seeds:
+  - 42
+  exhaustive: false
+continuous:
+  enabled: false
+cost_rates:
+  gpu_usd_per_hour: null
+  cpu_usd_per_hour: null
+  storage_usd_per_gb_month: null

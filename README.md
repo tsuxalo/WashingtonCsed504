@@ -215,3 +215,11 @@ makes all same-architecture GPUs visible. Helpers you can import:
   the cells finish in a few minutes (accuracy will be low — this is a pipeline demo only). For
   real ViT results (200 epochs), use Google Colab with a GPU runtime or a Windows/Linux machine
   with CUDA.
+
+## Hyperparameter optimization additions
+
+The optional additions-only HPO framework lives under `src/a1-cv/hpo/`. Start with
+`src/a1-cv/hpo_smoke_test_colab.ipynb`, then use
+`src/a1-cv/hyperparameter_search_colab.ipynb` for a persistent Pareto search.
+See `src/a1-cv/hpo_docs/` for architecture, modes, hardware scheduling, estimation,
+persistence, benchmarks, and limitations.

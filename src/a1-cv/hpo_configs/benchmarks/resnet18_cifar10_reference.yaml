@@ -1,0 +1,107 @@
+study:
+  name: resnet18-cifar10-reference
+  output_dir: ../../../../hpo_outputs
+  storage_path: ../../../../hpo_outputs/resnet18-cifar10-reference.db
+  seed: 42
+  resume: true
+search:
+  mode: full
+  sampler: random
+dataset:
+  name: cifar10
+  validation_fraction: 0.1
+  split_seed: 42
+  strategy: gpu_resident
+model:
+  name: resnet18
+search_space:
+  optimizer:
+    type: fixed
+    default: sgd
+  learning_rate:
+    type: fixed
+    default: 0.2
+  batch_size:
+    type: fixed
+    default: 512
+  weight_decay:
+    type: fixed
+    default: 0.0005
+  momentum:
+    type: fixed
+    default: 0.9
+  nesterov:
+    type: fixed
+    default: true
+  scheduler:
+    type: fixed
+    default: cosine
+  warmup_epochs:
+    type: fixed
+    default: 5
+  label_smoothing:
+    type: fixed
+    default: 0.1
+  gradient_clip:
+    type: fixed
+    default: 0.0
+  strong_augmentation:
+    type: fixed
+    default: false
+  channels_last:
+    type: fixed
+    default: true
+objectives:
+- name: validation_top1
+  direction: maximize
+  primary: true
+- name: wall_seconds
+  direction: minimize
+- name: peak_gpu_memory_mb
+  direction: minimize
+constraints:
+- name: peak_gpu_memory_mb
+  operator: <=
+  value: 14000
+runtime:
+  device: auto
+  precision: auto
+  tf32: true
+  channels_last: true
+  compile: false
+  concurrent_trials: 1
+  memory_reserve_gb: 1.0
+  data_strategy: auto
+proxy:
+  enabled: true
+  trials: 8
+  epochs: 2
+  maximum_steps: 300
+  train_fraction: 0.25
+  validation_fraction: 0.5
+  promote_top_k: 4
+successive_halving:
+  enabled: true
+  resource_type: epochs
+  rung_budgets:
+  - 5
+  - 12
+  reduction_factor: 2
+  minimum_trials_per_rung: 1
+  continue_checkpoints: true
+  promotion_metric: validation_top1
+full:
+  enabled: true
+  trials: 1
+  epochs: 30
+  data_fraction: 1.0
+  validation_fraction: 1.0
+  seeds:
+  - 42
+  exhaustive: false
+continuous:
+  enabled: false
+cost_rates:
+  gpu_usd_per_hour: null
+  cpu_usd_per_hour: null
+  storage_usd_per_gb_month: null

@@ -236,3 +236,9 @@ src/a1-cv/weights/
 
 # ImageNet-32 prepared arrays live under data/imagenet32 -- 3.9 GB, regenerate with:
 #   python src/a1-cv/imagenet_prepare.py
+
+# Hyperparameter optimization runtime state (generated and resumable).
+hpo_outputs/
+src/a1-cv/hpo_outputs/
+*.db-wal
+*.db-shm

@@ -1,0 +1,18 @@
+name,type,low,high,choices,step,log,default,condition,enabled,description
+optimizer,fixed,,,,,false,adamw,,true,Transformer optimizer
+learning_rate,float,0.00003,0.003,,,true,0.001,,true,AdamW learning rate
+batch_size,categorical,,,64|128|256|512,,false,256,,true,Global batch size
+weight_decay,float,0.001,0.2,,,true,0.05,,true,Decoupled weight decay
+beta1,float,0.8,0.95,,0.01,false,0.9,,true,AdamW beta1
+beta2,float,0.95,0.9999,,0.0001,false,0.999,,true,AdamW beta2
+scheduler,categorical,,,cosine|step,,false,cosine,,true,Learning-rate schedule
+warmup_epochs,int,2,15,,1,false,5,"scheduler == 'cosine'",true,Warm-up epochs
+label_smoothing,float,0.0,0.2,,0.05,false,0.0,,true,Label smoothing
+gradient_clip,categorical,,,0.5|1.0|2.0,,false,1.0,,true,Gradient norm clip
+strong_augmentation,fixed,,,,,false,true,,true,Mixup CutMix and erasing
+hidden_dim,categorical,,,192|384|576,,false,384,,true,Transformer width
+layers,categorical,,,4|6|8,,false,6,,true,Transformer depth
+heads,categorical,,,3|6|9,,false,6,,true,Attention heads
+mlp_dim,categorical,,,768|1536|2304,,false,1536,,true,MLP hidden dimension
+patch_size,categorical,,,4|8,,false,4,,true,Patch size dividing 32
+channels_last,fixed,,,,,false,false,,true,ViT uses standard memory layout

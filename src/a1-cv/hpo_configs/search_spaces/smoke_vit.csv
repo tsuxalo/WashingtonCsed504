@@ -1,0 +1,11 @@
+name,type,low,high,choices,step,log,default,condition,enabled
+batch_size,fixed,,,,,,16,,true
+optimizer,fixed,,,,,,adamw,,true
+learning_rate,categorical,,,0.0005|0.001,,,0.001,,true
+weight_decay,fixed,,,,,,0.01,,true
+scheduler,fixed,,,,,,cosine,,true
+warmup_epochs,fixed,,,,,,0,,true
+label_smoothing,fixed,,,,,,0.0,,true
+gradient_clip,fixed,,,,,,1.0,,true
+strong_augmentation,fixed,,,,,,false,,true
+channels_last,fixed,,,,,,false,,true
