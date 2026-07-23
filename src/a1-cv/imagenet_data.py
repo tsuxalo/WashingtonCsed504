@@ -33,6 +33,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+import subsets as S
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'imagenet32')
 
@@ -57,8 +58,15 @@ class GpuImageNet32:
     the GPU there is simply nothing left for a DataLoader to do.
     """
 
-    def __init__(self, device: torch.device, split: str = 'train', subset: int | None = None,
-                 seed: int = 0):
+    def __init__(
+        self,
+        device: torch.device,
+        split: str = 'train',
+        subset: int | None = None,
+        seed: int = 0,
+        subset_fraction: float | None = None,
+        subset_manifest_dir: str | None = None,
+    ):
         # Step 1: Open the arrays as memmaps rather than reading them whole. For a subset run, the
         # random pick in Step 2 then pulls just the rows we keep off disk, instead of materializing
         # all 3.9 GB in host RAM only to throw most of it away.
@@ -71,10 +79,66 @@ class GpuImageNet32:
         # The file is sorted by class, so a sequential subset would contain only a handful of classes:
         # the first 10,000 rows hold just 8 of the 1000. A --smoke-test that trained on 8 classes and
         # then reported 95% accuracy would be a genuinely evil bug, green and lying.
-        if subset is not None and subset < len(x):
-            rng = np.random.default_rng(seed)
-            idx = np.sort(rng.choice(len(x), size=subset, replace=False))
-            x, y = x[idx], y[idx]
+        
+        self.full_n = len(y)
+        self.subset_metadata = None
+        self.subset_manifest_path = None
+
+        if subset is not None and subset_fraction is not None:
+            raise ValueError(
+                "Provide either subset or subset_fraction, not both."
+            )
+
+        if subset is not None and not 1 <= subset <= self.full_n:
+            raise ValueError(
+                f"subset must be between 1 and {self.full_n:,}, "
+                f"got {subset:,}."
+            )
+
+        if (
+            subset_fraction is not None
+            and not 0.0 < subset_fraction <= 1.0
+        ):
+            raise ValueError(
+                "subset_fraction must be in the interval (0, 1]."
+            )
+
+        use_size_subset = (
+            subset is not None
+            and subset < self.full_n
+        )
+
+        use_fraction_subset = (
+            subset_fraction is not None
+            and subset_fraction < 1.0
+        )
+
+        if use_size_subset or use_fraction_subset:
+            indices, metadata, manifest_path = (
+                S.get_or_create_stratified_indices(
+                    y,
+                    size=subset if use_size_subset else None,
+                    fraction=(
+                        subset_fraction
+                        if use_fraction_subset
+                        else None
+                    ),
+                    seed=seed,
+                    split=split,
+                    manifest_dir=subset_manifest_dir,
+                    ensure_all_classes=True,
+                )
+            )
+
+            x = x[indices]
+            y = y[indices]
+
+            self.subset_metadata = metadata
+            self.subset_manifest_path = (
+                str(manifest_path)
+                if manifest_path is not None
+                else None
+            )
 
 
         # Step 3: Upload the whole thing to the card once, and keep the pixels as uint8 on purpose.
@@ -90,6 +154,8 @@ class GpuImageNet32:
         self.y = torch.from_numpy(np.ascontiguousarray(y)).to(device, non_blocking=True).long()
         self.device = device
         self.n = len(self.y)
+
+        self.actual_fraction = self.n / self.full_n
 
 
         # Step 4: Stash the normalization constants shaped as (1, 3, 1, 1) so a single subtract and

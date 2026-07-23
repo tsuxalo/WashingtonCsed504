@@ -41,6 +41,11 @@ import models as M
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), 'runs')
 
+SUBSET_DIR = os.path.join(
+    OUT_DIR,
+    "subsets",
+)
+
 
 def build_optimizer(model, name, batch_size, args):
     # Pick the optimizer by model family: CNNs get SGD with momentum, transformers get AdamW.
@@ -73,6 +78,17 @@ def main():
     # Step 1: Parse the CLI. Every knob has a sane default, so a bare `--model X --gpu N` just
     # works; the flags below are only for when you want to deviate from the recipe.
     p = argparse.ArgumentParser()
+
+    p.add_argument(
+        "--train-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "fraction of ImageNet-32 training rows to use; "
+            "the subset is stratified and saved by seed"
+        ),
+    )
+
     p.add_argument('--model', choices=list(M.BUILDERS), required=True)
     p.add_argument('--dataset', choices=['imagenet32', 'cifar10', 'cifar100'], default='imagenet32',
                    help='which dataset to train on (default: imagenet32)')
@@ -96,6 +112,23 @@ def main():
                    help='grad-norm clip, 0 disables (default: off for resnet18, 1.0 otherwise)')
     args = p.parse_args()
 
+    if not 0.0 < args.train_fraction <= 1.0:
+        p.error("--train-fraction must be in the interval (0, 1].")
+
+    if (
+        args.dataset != "imagenet32"
+        and args.train_fraction != 1.0
+    ):
+        p.error(
+            "--train-fraction is currently supported only "
+            "for ImageNet-32."
+        )
+
+    if args.smoke_test and args.train_fraction != 1.0:
+        p.error(
+            "--smoke-test already selects a fixed subset; "
+            "do not combine it with --train-fraction."
+        )
 
     # The key locals this function threads through, with what each one holds:
     #
@@ -188,15 +221,51 @@ def main():
     t_load = time.time()
     val_subset = (2_000 if args.dataset.startswith('cifar') else 10_000) if args.smoke_test else None
     if args.dataset == 'imagenet32':
-        train_ds = D.GpuImageNet32(device, 'train', subset=subset)
-        val_ds = D.GpuImageNet32(device, 'val', subset=val_subset)
+            train_fraction = (
+                args.train_fraction
+                if not args.smoke_test
+                and args.train_fraction < 1.0
+                else None
+            )
+
+            train_ds = D.GpuImageNet32(
+                device,
+                "train",
+                subset=subset,
+                seed=args.seed,
+                subset_fraction=train_fraction,
+                subset_manifest_dir=SUBSET_DIR,
+            )
+
+            val_ds = D.GpuImageNet32(
+                device,
+                "val",
+                subset=val_subset,
+                seed=args.seed,
+                subset_manifest_dir=SUBSET_DIR,
+            )
     else:
         train_ds = C.GpuCifar(device, args.dataset, 'train', subset=subset)
         val_ds = C.GpuCifar(device, args.dataset, 'test', subset=val_subset)
     print(f'[{tag}] {args.dataset} resident on GPU: {train_ds.gb():.1f} GB train + {val_ds.gb():.1f} GB val '
           f'({train_ds.n:,} + {val_ds.n:,} images) in {time.time()-t_load:.0f}s')
 
+    if args.dataset == "imagenet32":
+        print(
+            f"[{tag}] training fraction: "
+            f"{train_ds.actual_fraction:.3%} "
+            f"({train_ds.n:,}/{train_ds.full_n:,})"
+        )
 
+        if train_ds.subset_manifest_path is not None:
+            print(
+                f"[{tag}] subset manifest: "
+                f"{train_ds.subset_manifest_path}"
+            )
+            print(
+                f"[{tag}] subset checksum: "
+                f"{train_ds.subset_metadata['indices_sha256']}"
+            )
     # Step 8: Build the model on-device, then flip CNNs to NHWC (channels_last) where it pays off.
     model = M.build(args.model, train_ds.n_classes).to(device)
     channels_last = args.model.startswith('resnet') and amp_dtype is torch.bfloat16
